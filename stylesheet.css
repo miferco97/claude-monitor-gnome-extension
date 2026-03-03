@@ -1,0 +1,18 @@
+.claude-monitor-label {
+    font-size: 12px;
+    font-weight: bold;
+    padding: 0 4px;
+}
+
+.claude-monitor-icon {
+    icon-size: 14px;
+    padding: 0 2px 0 0;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.claude-monitor-header {
+    font-size: 13px;
+    font-weight: bold;
+    color: #c4a0ff;
+}

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="claude-monitor@miguel">
+  <schema id="org.gnome.shell.extensions.claude-monitor"
+          path="/org/gnome/shell/extensions/claude-monitor/">
+
+    <key name="plan-type" type="s">
+      <default>'pro'</default>
+      <summary>Subscription plan type</summary>
+      <description>Claude subscription plan: "pro", "max5", or "max20". Used to calculate usage percentages against plan limits.</description>
+    </key>
+
+    <key name="refresh-interval" type="i">
+      <default>15</default>
+      <summary>Refresh interval in seconds</summary>
+      <description>How often the indicator refreshes token data from disk.</description>
+    </key>
+
+    <key name="panel-position" type="s">
+      <default>'right'</default>
+      <summary>Panel position</summary>
+      <description>Which side of the top panel to place the indicator: "left" or "right".</description>
+    </key>
+
+    <key name="show-prefix" type="b">
+      <default>true</default>
+      <summary>Show "Claude" prefix</summary>
+      <description>Whether to show the word "Claude" before the progress bar.</description>
+    </key>
+
+    <key name="prefix-style" type="s">
+      <default>'text'</default>
+      <summary>Prefix style</summary>
+      <description>How to show the Claude prefix: "text" for the word, "icon" for the Claude logo.</description>
+    </key>
+
+    <key name="bar-length" type="i">
+      <default>10</default>
+      <summary>Progress bar length</summary>
+      <description>Number of segments in the progress bar (5-30).</description>
+    </key>
+
+    <key name="bar-style" type="s">
+      <default>'blocks'</default>
+      <summary>Progress bar style</summary>
+      <description>Visual style for the bar: "blocks", "smooth", "dots", "squares", or "thin".</description>
+    </key>
+
+    <key name="bar-metric" type="s">
+      <default>'cost'</default>
+      <summary>Bar metric</summary>
+      <description>What the bar represents: "cost" or "tokens".</description>
+    </key>
+
+    <key name="bar-color" type="s">
+      <default>'white'</default>
+      <summary>Bar color scheme</summary>
+      <description>Color scheme for the progress bar: "white", "green-red", "blue", "purple", "amber", or "rainbow".</description>
+    </key>
+
+    <key name="show-time-remaining" type="b">
+      <default>true</default>
+      <summary>Show time remaining</summary>
+      <description>Whether to show estimated time until plan limit is reached.</description>
+    </key>
+
+    <key name="estimation-mode" type="s">
+      <default>'balanced'</default>
+      <summary>Estimation mode</summary>
+      <description>How aggressively to estimate usage. "conservative" shows raw calculated values, "balanced" applies a small correction factor to approximate /usage, "generous" adds extra margin for safety.</description>
+    </key>
+
+  </schema>
+</schemalist>
