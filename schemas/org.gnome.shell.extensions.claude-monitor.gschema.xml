@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<schemalist gettext-domain="claude-monitor@miguel">
+<schemalist gettext-domain="claude-monitor@miferco97">
   <schema id="org.gnome.shell.extensions.claude-monitor"
           path="/org/gnome/shell/extensions/claude-monitor/">
 

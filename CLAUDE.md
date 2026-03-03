@@ -22,7 +22,7 @@ A compact GNOME Shell 48 taskbar indicator that monitors Claude Code token usage
 - `stylesheet.css` — Panel styling
 - `schemas/` — GSettings schema for user preferences
 - `icons/` — Claude logo PNGs (16px, 32px, 48px)
-- Installed via symlink from `~/.local/share/gnome-shell/extensions/claude-monitor@miguel/`
+- Installed via symlink from `~/.local/share/gnome-shell/extensions/claude-monitor@miferco97/`
 
 ## Known Issues
 

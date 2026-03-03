@@ -1,7 +1,7 @@
 {
   "name": "Claude Token Monitor",
   "description": "Monitor Claude Code token usage, cost, and burn rate from the GNOME Shell panel.",
-  "uuid": "claude-monitor@miguel",
+  "uuid": "claude-monitor@miferco97",
   "shell-version": ["48"],
   "settings-schema": "org.gnome.shell.extensions.claude-monitor",
   "version": 1
