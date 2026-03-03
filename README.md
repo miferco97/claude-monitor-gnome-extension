@@ -124,6 +124,10 @@ The extension reads Claude Code's JSONL conversation logs on a timer and:
   journalctl -f -o cat /usr/bin/gnome-shell
   ```
 
+## Acknowledgements
+
+Inspired by [Claude Code Usage Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor).
+
 ## License
 
 MIT
