@@ -170,12 +170,24 @@ export default class ClaudeMonitorPreferences extends ExtensionPreferences {
         });
         styleGroup.add(metricRow);
 
-        // Show time remaining
-        const timeRow = new Adw.SwitchRow({
-            title: 'Show Time Remaining',
-            subtitle: 'Display estimated time until plan limit.',
+        // Time display mode
+        const timeRow = new Adw.ComboRow({
+            title: 'Time Display',
+            subtitle: 'What time info to show in the panel.',
         });
-        settings.bind('show-time-remaining', timeRow, 'active', 0);
+        const timeModel = Gtk.StringList.new([
+            'None',
+            'Estimated time remaining',
+            'Reset countdown',
+        ]);
+        timeRow.set_model(timeModel);
+        const timeKeys = ['none', 'remaining', 'reset'];
+        timeRow.set_selected(
+            Math.max(0, timeKeys.indexOf(settings.get_string('time-display')))
+        );
+        timeRow.connect('notify::selected', () => {
+            settings.set_string('time-display', timeKeys[timeRow.get_selected()]);
+        });
         styleGroup.add(timeRow);
 
         // -- General group --

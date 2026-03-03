@@ -157,11 +157,19 @@ function _formatCost(c) {
 function _formatTimeRemaining(minutes) {
   if (minutes <= 0) return "exhausted";
   if (minutes === Infinity) return "--";
-  if (minutes < 60) return `${Math.round(minutes)}m left`;
+  if (minutes < 60) return `${Math.round(minutes)}m est.`;
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
-  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h left`;
-  return `${h}h ${m}m left`;
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h est.`;
+  return `${h}h ${m}m est.`;
+}
+
+function _formatResetTime(minutes) {
+  if (minutes <= 0) return "resetting now";
+  if (minutes < 60) return `${Math.round(minutes)}m reset`;
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return `${h}h ${m}m reset`;
 }
 
 function _makeBar(fraction, segments, style, colorScheme) {
@@ -483,6 +491,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._burnTokensItem = this._addInfoItem("Burn rate", "--");
       this._burnCostItem = this._addInfoItem("Cost rate", "--");
       this._timeRemainingItem = this._addInfoItem("Time remaining", "--");
+      this._windowResetItem = this._addInfoItem("Window resets in", "--");
 
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -556,10 +565,13 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const entries = _readAndParseJsonl(files, cutoffMs);
       const stats = _calculateStats(entries);
 
-      this._updateDisplay(stats);
+      const resetMs = blockStart + SESSION_HOURS * 3600000 - now.getTime();
+      const resetMinutes = Math.max(0, resetMs / 60000);
+
+      this._updateDisplay(stats, resetMinutes);
     }
 
-    _updateDisplay(stats) {
+    _updateDisplay(stats, resetMinutes) {
       const planType = this._settings.get_string("plan-type");
       const plan = PLAN_LIMITS[planType];
       const barMetric = this._settings.get_string("bar-metric");
@@ -593,7 +605,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const barLength = this._settings.get_int("bar-length");
       const barStyle = this._settings.get_string("bar-style");
       const barColor = this._settings.get_string("bar-color");
-      const showTime = this._settings.get_boolean("show-time-remaining");
+      const timeDisplay = this._settings.get_string("time-display");
 
       // Icon vs text prefix
       if (showPrefix && prefixStyle === "icon") {
@@ -606,9 +618,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       }
 
       const textPrefix = showPrefix && prefixStyle === "text" ? "Claude " : "";
-      const timeSuffix = showTime
-        ? ` ${_formatTimeRemaining(timeRemainingMin)}`
-        : "";
+      let timeSuffix = "";
+      if (timeDisplay === "remaining") {
+        timeSuffix = ` ${_formatTimeRemaining(timeRemainingMin)}`;
+      } else if (timeDisplay === "reset") {
+        timeSuffix = ` ${_formatResetTime(resetMinutes)}`;
+      }
 
       // Bar fraction based on metric — _makeBar returns Pango markup
       let panelMarkup;
@@ -620,7 +635,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
             ? stats.billableTokens / plan.tokens
             : stats.totalCost / plan.cost;
         const bar = _makeBar(fraction, barLength, barStyle, barColor);
-        panelMarkup = `${textPrefix}\u200B${bar}${timeSuffix}`;
+        panelMarkup = `${textPrefix}\u200B${bar} ${timeSuffix}`;
       } else {
         panelMarkup = `${textPrefix}${_formatTokens(stats.billableTokens)} \u2191${timeSuffix}`;
       }
@@ -671,6 +686,10 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._updateInfoItem(
         this._timeRemainingItem,
         _formatTimeRemaining(timeRemainingMin),
+      );
+      this._updateInfoItem(
+        this._windowResetItem,
+        _formatResetTime(resetMinutes),
       );
 
       if (plan) {

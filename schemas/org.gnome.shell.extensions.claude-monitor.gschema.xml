@@ -63,6 +63,12 @@
       <description>Whether to show estimated time until plan limit is reached.</description>
     </key>
 
+    <key name="time-display" type="s">
+      <default>'remaining'</default>
+      <summary>Time display mode</summary>
+      <description>What time info to show in the panel: "none" (nothing), "remaining" (time until plan limit exhausted), or "reset" (countdown until 5h window resets).</description>
+    </key>
+
     <key name="estimation-mode" type="s">
       <default>'balanced'</default>
       <summary>Estimation mode</summary>
