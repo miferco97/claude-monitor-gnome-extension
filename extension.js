@@ -38,12 +38,10 @@ const PLAN_LIMITS = {
   max20: { tokens: 220000, cost: 140.0, label: "Max 20x ($200/mo)" },
 };
 
-// Estimation scale factors for fine-tuning against Anthropic's /usage tracking.
-// Cost calculation now includes cache tokens, so these are smaller adjustments.
 const ESTIMATION_MODES = {
-  conservative: 0.8, // Under-estimate
-  balanced: 1.0, // Normal (no adjustment)
-  generous: 1.2, // Over-estimate
+  conservative: 0.8,
+  balanced: 1.0,
+  generous: 1.2,
 };
 
 // Bar style character pairs: [filled, empty]
@@ -60,15 +58,22 @@ const SMOOTH_BLOCKS = [
   "\u258F",
   "\u258E",
   "\u258D",
-  "\u258C", // 0/8 ▏ ▎ ▍ ▌
+  "\u258C",
   "\u258B",
   "\u258A",
   "\u2589",
-  "\u2588", // ▋ ▊ ▉ █
+  "\u2588",
 ];
 
+// Cairo-rendered bar styles (use St.DrawingArea instead of Pango markup)
+const CAIRO_BAR_STYLES = new Set([
+  "pill",
+  "thick-rounded",
+  "segmented",
+  "glow-edge",
+]);
+
 // Color schemes: [filled_color, empty_color]
-// 'gradient' schemes use per-segment coloring
 const BAR_COLORS = {
   white: { filled: "#e0e0e0", empty: "#555555" },
   "green-red": { gradient: true, empty: "#555555" },
@@ -76,11 +81,70 @@ const BAR_COLORS = {
   purple: { filled: "#c4a0ff", empty: "#3d2a5c" },
   amber: { filled: "#ffb74d", empty: "#5c4a2a" },
   rainbow: { gradient: true, empty: "#555555" },
+  dracula: { gradient: true, empty: "#44475a" },
+  nord: { gradient: true, empty: "#3b4252" },
+  catppuccin: { gradient: true, empty: "#45475a" },
+  neon: { gradient: true, empty: "#1a1a2e" },
+  sunset: { gradient: true, empty: "#2d1b3d" },
+  ocean: { gradient: true, empty: "#0d253f" },
+  solarized: { gradient: true, empty: "#073642" },
+  accent: { filled: null, empty: "#555555" },
+  custom: { gradient: true, empty: "#555555" },
 };
 
+// Module-level vars for custom color (set in _updateDisplay)
+let _customColorStart = "#5b9bf5";
+let _customColorEnd = "#c4a0ff";
+
+// All bar styles for middle-click cycling
+const ALL_BAR_STYLES = [
+  "blocks",
+  "smooth",
+  "dots",
+  "squares",
+  "thin",
+  "pill",
+  "thick-rounded",
+  "segmented",
+  "glow-edge",
+  "vbar",
+  "vbar-dual",
+];
+
+function _getAccentColor() {
+  try {
+    const ifaceSettings = new Gio.Settings({
+      schema_id: "org.gnome.desktop.interface",
+    });
+    const accent = ifaceSettings.get_string("accent-color");
+    const accentMap = {
+      blue: "#3584e4",
+      teal: "#2190a4",
+      green: "#3a944a",
+      yellow: "#c88800",
+      orange: "#ed5b00",
+      red: "#e62d42",
+      pink: "#d56199",
+      purple: "#9141ac",
+      slate: "#6f8396",
+    };
+    return accentMap[accent] || "#3584e4";
+  } catch (e) {
+    return "#3584e4";
+  }
+}
+
 function _getGradientColor(fraction, scheme) {
+  if (scheme === "custom") {
+    const [r1, g1, b1] = _hexToRGBA(_customColorStart).map((v) =>
+      Math.round(v * 255),
+    );
+    const [r2, g2, b2] = _hexToRGBA(_customColorEnd).map((v) =>
+      Math.round(v * 255),
+    );
+    return _lerpColor(r1, g1, b1, r2, g2, b2, fraction);
+  }
   if (scheme === "green-red") {
-    // Green at 0% → yellow at 50% → red at 100%
     if (fraction <= 0.5) {
       const t = fraction * 2;
       const r = Math.round(100 + 155 * t);
@@ -94,11 +158,77 @@ function _getGradientColor(fraction, scheme) {
     }
   }
   if (scheme === "rainbow") {
-    // HSL hue sweep: red → yellow → green → cyan → blue → purple
     const hue = fraction * 300;
     return _hslToHex(hue, 80, 65);
   }
+  if (scheme === "dracula") {
+    return _lerpColor(0xbd, 0x93, 0xf9, 0xff, 0x79, 0xc6, fraction);
+  }
+  if (scheme === "nord") {
+    return _lerpColor(0x5e, 0x81, 0xac, 0x88, 0xc0, 0xd0, fraction);
+  }
+  if (scheme === "catppuccin") {
+    if (fraction <= 0.5) {
+      const t = fraction * 2;
+      return _lerpColor(0xcb, 0xa6, 0xf7, 0xfa, 0xb3, 0x87, t);
+    } else {
+      const t = (fraction - 0.5) * 2;
+      return _lerpColor(0xfa, 0xb3, 0x87, 0xa6, 0xe3, 0xa1, t);
+    }
+  }
+  if (scheme === "neon") {
+    if (fraction <= 0.5) {
+      const t = fraction * 2;
+      return _lerpColor(0x00, 0xff, 0xff, 0xff, 0x00, 0xff, t);
+    } else {
+      const t = (fraction - 0.5) * 2;
+      return _lerpColor(0xff, 0x00, 0xff, 0x00, 0xff, 0x00, t);
+    }
+  }
+  if (scheme === "sunset") {
+    if (fraction <= 0.5) {
+      const t = fraction * 2;
+      return _lerpColor(0xff, 0x8c, 0x42, 0xd6, 0x32, 0x30, t);
+    } else {
+      const t = (fraction - 0.5) * 2;
+      return _lerpColor(0xd6, 0x32, 0x30, 0x7b, 0x2d, 0x8e, t);
+    }
+  }
+  if (scheme === "ocean") {
+    if (fraction <= 0.5) {
+      const t = fraction * 2;
+      return _lerpColor(0x1a, 0x52, 0x76, 0x2e, 0x86, 0xab, t);
+    } else {
+      const t = (fraction - 0.5) * 2;
+      return _lerpColor(0x2e, 0x86, 0xab, 0x48, 0xc9, 0xb0, t);
+    }
+  }
+  if (scheme === "solarized") {
+    if (fraction <= 0.5) {
+      const t = fraction * 2;
+      return _lerpColor(0xb5, 0x89, 0x00, 0xcb, 0x4b, 0x16, t);
+    } else {
+      const t = (fraction - 0.5) * 2;
+      return _lerpColor(0xcb, 0x4b, 0x16, 0xdc, 0x32, 0x2f, t);
+    }
+  }
   return "#e0e0e0";
+}
+
+function _hexToRGBA(hex) {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.substring(0, 2), 16) / 255,
+    parseInt(h.substring(2, 4), 16) / 255,
+    parseInt(h.substring(4, 6), 16) / 255,
+  ];
+}
+
+function _lerpColor(r1, g1, b1, r2, g2, b2, t) {
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
 }
 
 function _hslToHex(h, s, l) {
@@ -140,8 +270,26 @@ function _hslToHex(h, s, l) {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+// Cairo rounded rectangle utility
+function _roundedRect(cr, x, y, w, h, r) {
+  const deg = Math.PI / 180;
+  cr.newSubPath();
+  cr.arc(x + w - r, y + r, r, -90 * deg, 0 * deg);
+  cr.arc(x + w - r, y + h - r, r, 0 * deg, 90 * deg);
+  cr.arc(x + r, y + h - r, r, 90 * deg, 180 * deg);
+  cr.arc(x + r, y + r, r, 180 * deg, 270 * deg);
+  cr.closePath();
+}
+
+// Get fill color for a bar (resolves accent color dynamically)
+function _getFilledColor(colorScheme) {
+  const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+  if (colorScheme === "accent") return _getAccentColor();
+  return scheme.filled || "#e0e0e0";
+}
+
 const SESSION_HOURS = 5;
-const LOOKBACK_HOURS = 10; // How far back to scan for session detection
+const LOOKBACK_HOURS = 10;
 
 function _formatTokens(n) {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -174,11 +322,6 @@ function _formatResetTime(minutes) {
   return `${h}h ${m}m reset`;
 }
 
-/**
- * Detect the current session window start by walking through entry timestamps.
- * A new session window starts whenever an entry is >= previous window start + 5h.
- * Returns the window start (ms) or null if no active session.
- */
 function _floorToHourUTC(ms) {
   const d = new Date(ms);
   d.setUTCMinutes(0, 0, 0);
@@ -188,11 +331,9 @@ function _floorToHourUTC(ms) {
 function _detectSessionStart(entries, nowMs) {
   if (entries.length === 0) return null;
 
-  // Sort by timestamp ascending
   const sorted = entries.slice().sort((a, b) => a.timestamp - b.timestamp);
   const windowDuration = SESSION_HOURS * 3600000;
 
-  // Floor to the start of the UTC hour (matching Claude-Code-Usage-Monitor)
   let windowStart = _floorToHourUTC(sorted[0].timestamp);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].timestamp >= windowStart + windowDuration) {
@@ -200,7 +341,6 @@ function _detectSessionStart(entries, nowMs) {
     }
   }
 
-  // If the detected window has expired, there's no active session
   if (windowStart + windowDuration <= nowMs) return null;
 
   return windowStart;
@@ -217,7 +357,6 @@ function _makeBar(fraction, segments, style, colorScheme) {
   const empty = segments - filled;
 
   if (scheme.gradient) {
-    // Gradient on filled segments, neutral color on empty segments
     let markup = "";
     for (let i = 0; i < segments; i++) {
       if (i < filled) {
@@ -231,12 +370,13 @@ function _makeBar(fraction, segments, style, colorScheme) {
     return markup;
   }
 
-  // Solid color: filled chars with color, outline chars for remaining
+  const filledColor =
+    colorScheme === "accent" ? _getAccentColor() : scheme.filled;
   let markup = "";
   if (filled > 0)
-    markup += `<span foreground="${scheme.filled}">${chars[0].repeat(filled)}</span>`;
+    markup += `<span foreground="${filledColor}">${chars[0].repeat(filled)}</span>`;
   if (empty > 0)
-    markup += `<span foreground="${scheme.filled}">${chars[1].repeat(empty)}</span>`;
+    markup += `<span foreground="${filledColor}">${chars[1].repeat(empty)}</span>`;
   return markup;
 }
 
@@ -251,32 +391,30 @@ function _makeSmoothBar(fraction, segments, scheme, colorScheme) {
   let markup = "";
 
   if (scheme.gradient) {
-    // Full filled segments with gradient
     for (let i = 0; i < fullCount; i++) {
       const segFraction = segments <= 1 ? 0.5 : i / (segments - 1);
       const color = _getGradientColor(segFraction, colorScheme);
       markup += `<span foreground="${color}">\u2588</span>`;
     }
-    // Partial segment
     if (hasPartial) {
       const segFraction = segments <= 1 ? 0.5 : fullCount / (segments - 1);
       const color = _getGradientColor(segFraction, colorScheme);
       markup += `<span foreground="${color}">${SMOOTH_BLOCKS[partialIndex]}</span>`;
     }
-    // Empty segments
     for (let i = 0; i < emptyCount; i++) {
       markup += `<span foreground="${scheme.empty}">\u2591</span>`;
     }
     return markup;
   }
 
-  // Solid color smooth bar
+  const filledColor =
+    colorScheme === "accent" ? _getAccentColor() : scheme.filled;
   if (fullCount > 0)
-    markup += `<span foreground="${scheme.filled}">${"\u2588".repeat(fullCount)}</span>`;
+    markup += `<span foreground="${filledColor}">${"\u2588".repeat(fullCount)}</span>`;
   if (hasPartial)
-    markup += `<span foreground="${scheme.filled}">${SMOOTH_BLOCKS[partialIndex]}</span>`;
+    markup += `<span foreground="${filledColor}">${SMOOTH_BLOCKS[partialIndex]}</span>`;
   if (emptyCount > 0)
-    markup += `<span foreground="${scheme.filled}">${"\u2591".repeat(emptyCount)}</span>`;
+    markup += `<span foreground="${filledColor}">${"\u2591".repeat(emptyCount)}</span>`;
   return markup;
 }
 
@@ -334,7 +472,6 @@ function _recurseDir(dir, results, cutoffSecs) {
 let _dedupCounter = 0;
 
 function _extractUsage(entry) {
-  // Check multiple locations for usage data (matching Claude-Code-Usage-Monitor)
   const isAssistant = entry.type === "assistant";
   const sources = isAssistant
     ? [entry.message?.usage, entry.usage, entry]
@@ -359,16 +496,11 @@ function _extractUsage(entry) {
 }
 
 function _extractModel(entry) {
-  return (
-    entry.message?.model || entry.model || entry.usage?.model || ""
-  );
+  return entry.message?.model || entry.model || entry.usage?.model || "";
 }
 
 function _readAndParseJsonl(fileInfos, cutoffTime) {
   const decoder = new TextDecoder("utf-8");
-  // Keep-first dedup (matching Claude-Code-Usage-Monitor): the first entry
-  // per message_id:request_id is kept, subsequent duplicates are skipped.
-  // Entries without both IDs are always kept (no dedup).
   const seenKeys = new Set();
   const results = [];
   const usedPaths = new Set();
@@ -400,7 +532,6 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
     const fileEntries = [];
     const lines = contents.split("\n");
     for (const line of lines) {
-      // Quick pre-filter: skip lines without any token-related data
       if (!line.includes("tokens")) continue;
 
       let entry;
@@ -415,7 +546,6 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
 
       const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
 
-      // Build dedup key only when both IDs are present; null means no dedup
       const msgId = entry.message?.id || entry.message_id || "";
       const reqId = entry.requestId || entry.request_id || "";
       const dedupKey = msgId && reqId ? `${msgId}_${reqId}` : null;
@@ -453,7 +583,6 @@ function _calculateStats(entries) {
   let latestTs = 0;
   let activeModel = "";
 
-  // Calculate cost per-entry using each entry's actual model pricing
   let totalCost = 0;
   for (const entry of entries) {
     const u = entry.usage;
@@ -468,7 +597,6 @@ function _calculateStats(entries) {
     totalCacheRead += cr;
 
     const p = PRICING[_getModelTier(entry.model)];
-    // Include all token types in cost (matching Claude-Code-Usage-Monitor)
     totalCost +=
       (inp * p.input +
         out * p.output +
@@ -483,9 +611,6 @@ function _calculateStats(entries) {
     }
   }
 
-  // totalTokens: all token types (for display breakdown)
-  // billableTokens: input + output only (cache excluded from plan token limit,
-  // matching Claude-Code-Usage-Monitor's analysis.py totalTokens calculation)
   const totalTokens =
     totalInput + totalOutput + totalCacheCreate + totalCacheRead;
   const billableTokens = totalInput + totalOutput;
@@ -519,18 +644,39 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._extension = extension;
       this._settings = extension.getSettings();
       this._extensionPath = extension.path;
+      this._isPulsing = false;
+      this._burnHistory = [];
 
-      // Panel box: icon + label
+      // Panel box
       this._box = new St.BoxLayout({ style_class: "panel-status-menu-box" });
       this.add_child(this._box);
 
-      // Icon (hidden by default, shown when prefix-style is 'icon')
+      // Icon container (for badge overlay)
+      this._iconContainer = new St.Widget({
+        layout_manager: new Clutter.BinLayout(),
+        y_align: Clutter.ActorAlign.CENTER,
+        style: "width: 18px; height: 18px;",
+      });
+      this._iconContainer.set_clip_to_allocation(false);
+      this._iconContainer.visible = false;
+
+      // Icon
       this._icon = new St.Icon({
         style_class: "claude-monitor-icon",
         y_align: Clutter.ActorAlign.CENTER,
       });
-      this._icon.visible = false;
-      this._box.add_child(this._icon);
+      this._icon.set_pivot_point(0.5, 0.5);
+      this._iconContainer.add_child(this._icon);
+
+      // Status badge on icon — positioned at top-right corner
+      this._iconBadge = new St.Label({
+        text: "\u25CF",
+        style_class: "claude-monitor-badge",
+        x_align: Clutter.ActorAlign.END,
+        y_align: Clutter.ActorAlign.START,
+      });
+      this._iconBadge.visible = false;
+      this._iconContainer.add_child(this._iconBadge);
 
       // Label
       this._label = new St.Label({
@@ -538,19 +684,524 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
         style_class: "claude-monitor-label",
       });
-      this._box.add_child(this._label);
+
+      // Horizontal Cairo bar
+      this._hbar = new St.DrawingArea({
+        style_class: "claude-monitor-hbar",
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      this._hbar.set_size(80, 10);
+      this._hbar.visible = false;
+      this._hbar._fraction = 0;
+      this._hbar._style = "pill";
+      this._hbar._colorScheme = "white";
+      this._hbar._barLength = 10;
+      this._hbar.connect("repaint", (area) => this._drawHBar(area));
+
+      // Status dot
+      this._statusDot = new St.Label({
+        text: "\u25CF",
+        y_align: Clutter.ActorAlign.CENTER,
+        style_class: "claude-monitor-dot",
+      });
+      this._statusDot.visible = false;
+
+      // Vertical bar widgets
+      this._vbar = new St.DrawingArea({
+        style_class: "claude-monitor-vbar",
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      this._vbar.set_size(6, 16);
+      this._vbar.visible = false;
+      this._vbar._fraction = 0;
+      this._vbar._color1 = "#64dc8e";
+      this._vbar._color2 = "#ffb400";
+      this._vbar.connect("repaint", (area) => this._drawVBar(area));
+
+      this._vbar2 = new St.DrawingArea({
+        style_class: "claude-monitor-vbar",
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      this._vbar2.set_size(5, 16);
+      this._vbar2.visible = false;
+      this._vbar2._fraction = 0;
+      this._vbar2._color1 = "#5b9bf5";
+      this._vbar2._color2 = "#5b9bf5";
+      this._vbar2.connect("repaint", (area) => this._drawVBar(area));
+
+      // Store element widgets for reordering
+      this._elementWidgets = {
+        icon: this._iconContainer,
+        label: this._label,
+        bar: this._hbar,
+        dot: this._statusDot,
+        vbar: this._vbar,
+        vbar2: this._vbar2,
+      };
+
+      // Apply initial element order
+      this._reorderElements();
+
+      // Middle-click to cycle bar styles
+      this.connect("event", (actor, event) => {
+        if (
+          event.type() === Clutter.EventType.BUTTON_PRESS &&
+          event.get_button() === 2
+        ) {
+          this._cycleBarStyle();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+      });
 
       this._buildMenu();
+      this._updatePillBackground();
+      this._updateFontSize();
       this._refresh();
       this._startTimer();
 
-      this._settingsChangedId = this._settings.connect("changed", () => {
+      this._settingsChangedId = this._settings.connect("changed", (s, key) => {
+        if (key === "pill-background") this._updatePillBackground();
+        if (key === "dropdown-style") this._rebuildMenu();
+        if (key === "font-size") this._updateFontSize();
+        if (key === "element-order") this._reorderElements();
         this._refresh();
       });
     }
 
+    // ── Middle-click cycling ─────────────────────────────────
+
+    _cycleBarStyle() {
+      const current = this._settings.get_string("bar-style");
+      const idx = ALL_BAR_STYLES.indexOf(current);
+      const next = ALL_BAR_STYLES[(idx + 1) % ALL_BAR_STYLES.length];
+      this._settings.set_string("bar-style", next);
+    }
+
+    // ── Font size ────────────────────────────────────────────
+
+    _updateFontSize() {
+      this._box.remove_style_class_name("claude-text-small");
+      this._box.remove_style_class_name("claude-text-large");
+      const fontSize = this._settings.get_string("font-size");
+      if (fontSize === "small") this._box.add_style_class_name("claude-text-small");
+      else if (fontSize === "large")
+        this._box.add_style_class_name("claude-text-large");
+    }
+
+    // ── Cairo horizontal bar drawing ─────────────────────────
+
+    _drawHBar(area) {
+      const [w, h] = area.get_surface_size();
+      const cr = area.get_context();
+      const frac = Math.min(Math.max(area._fraction || 0, 0), 1.0);
+      const style = area._style || "pill";
+      const colorScheme = area._colorScheme || "white";
+
+      if (style === "pill") {
+        this._drawPillBar(cr, w, h, frac, colorScheme);
+      } else if (style === "thick-rounded") {
+        this._drawThickRoundedBar(cr, w, h, frac, colorScheme);
+      } else if (style === "segmented") {
+        this._drawSegmentedBar(cr, w, h, frac, colorScheme, area._barLength);
+      } else if (style === "glow-edge") {
+        this._drawGlowEdgeBar(cr, w, h, frac, colorScheme);
+      }
+
+      cr.$dispose();
+    }
+
+    _drawPillBar(cr, w, h, frac, colorScheme) {
+      const radius = h / 2;
+      const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+      const fillW = Math.round(frac * w);
+
+      // Track
+      _roundedRect(cr, 0, 0, w, h, radius);
+      cr.setSourceRGBA(0.15, 0.15, 0.2, 0.8);
+      cr.fill();
+
+      if (fillW > 0) {
+        cr.save();
+        cr.rectangle(0, 0, fillW, h);
+        cr.clip();
+        _roundedRect(cr, 0, 0, w, h, radius);
+        if (scheme.gradient || colorScheme === "custom") {
+          const pat = new imports.cairo.LinearGradient(0, 0, w, 0);
+          const c1 = _hexToRGBA(_getGradientColor(0, colorScheme));
+          const c2 = _hexToRGBA(_getGradientColor(1, colorScheme));
+          pat.addColorStopRGBA(0, c1[0], c1[1], c1[2], 1);
+          pat.addColorStopRGBA(1, c2[0], c2[1], c2[2], 1);
+          cr.setSource(pat);
+        } else {
+          const c = _hexToRGBA(_getFilledColor(colorScheme));
+          cr.setSourceRGBA(c[0], c[1], c[2], 1);
+        }
+        cr.fill();
+        cr.restore();
+      }
+    }
+
+    _drawThickRoundedBar(cr, w, h, frac, colorScheme) {
+      const radius = h / 2;
+      const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+      const fillW = Math.round(frac * w);
+
+      // Track
+      _roundedRect(cr, 0, 0, w, h, radius);
+      cr.setSourceRGBA(0.15, 0.15, 0.2, 0.8);
+      cr.fill();
+
+      if (fillW > 0) {
+        // Glow layer
+        const glowColor =
+          scheme.gradient || colorScheme === "custom"
+            ? _hexToRGBA(_getGradientColor(frac, colorScheme))
+            : _hexToRGBA(_getFilledColor(colorScheme));
+        _roundedRect(cr, -1, -1, fillW + 2, h + 2, radius + 1);
+        cr.setSourceRGBA(glowColor[0], glowColor[1], glowColor[2], 0.3);
+        cr.fill();
+
+        // Fill
+        cr.save();
+        cr.rectangle(0, 0, fillW, h);
+        cr.clip();
+        _roundedRect(cr, 0, 0, w, h, radius);
+        if (scheme.gradient || colorScheme === "custom") {
+          const pat = new imports.cairo.LinearGradient(0, 0, w, 0);
+          const c1 = _hexToRGBA(_getGradientColor(0, colorScheme));
+          const c2 = _hexToRGBA(_getGradientColor(1, colorScheme));
+          pat.addColorStopRGBA(0, c1[0], c1[1], c1[2], 1);
+          pat.addColorStopRGBA(1, c2[0], c2[1], c2[2], 1);
+          cr.setSource(pat);
+        } else {
+          const c = _hexToRGBA(_getFilledColor(colorScheme));
+          cr.setSourceRGBA(c[0], c[1], c[2], 1);
+        }
+        cr.fill();
+        cr.restore();
+      }
+    }
+
+    _drawSegmentedBar(cr, w, h, frac, colorScheme, segCount) {
+      const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+      segCount = segCount || 10;
+      const gap = 2;
+      const segW = (w - gap * (segCount - 1)) / segCount;
+      const filledCount = Math.round(frac * segCount);
+      const radius = 2;
+
+      for (let i = 0; i < segCount; i++) {
+        const x = i * (segW + gap);
+        _roundedRect(cr, x, 0, segW, h, radius);
+
+        if (i < filledCount) {
+          if (scheme.gradient || colorScheme === "custom") {
+            const segFrac = segCount <= 1 ? 0.5 : i / (segCount - 1);
+            const c = _hexToRGBA(_getGradientColor(segFrac, colorScheme));
+            cr.setSourceRGBA(c[0], c[1], c[2], 1);
+          } else {
+            const c = _hexToRGBA(_getFilledColor(colorScheme));
+            cr.setSourceRGBA(c[0], c[1], c[2], 1);
+          }
+        } else {
+          cr.setSourceRGBA(0.1, 0.1, 0.15, 0.8);
+        }
+        cr.fill();
+      }
+    }
+
+    _drawGlowEdgeBar(cr, w, h, frac, colorScheme) {
+      const radius = h / 2;
+      const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+      const fillW = Math.round(frac * w);
+
+      // Track
+      _roundedRect(cr, 0, 0, w, h, radius);
+      cr.setSourceRGBA(0.15, 0.15, 0.2, 0.8);
+      cr.fill();
+
+      if (fillW > 0) {
+        // Main fill
+        cr.save();
+        cr.rectangle(0, 0, fillW, h);
+        cr.clip();
+        _roundedRect(cr, 0, 0, w, h, radius);
+        if (scheme.gradient || colorScheme === "custom") {
+          const pat = new imports.cairo.LinearGradient(0, 0, w, 0);
+          const c1 = _hexToRGBA(_getGradientColor(0, colorScheme));
+          const c2 = _hexToRGBA(_getGradientColor(1, colorScheme));
+          pat.addColorStopRGBA(0, c1[0], c1[1], c1[2], 1);
+          pat.addColorStopRGBA(1, c2[0], c2[1], c2[2], 1);
+          cr.setSource(pat);
+        } else {
+          const c = _hexToRGBA(_getFilledColor(colorScheme));
+          cr.setSourceRGBA(c[0], c[1], c[2], 1);
+        }
+        cr.fill();
+        cr.restore();
+
+        // Glowing leading edge
+        const edgeColor =
+          scheme.gradient || colorScheme === "custom"
+            ? _hexToRGBA(_getGradientColor(frac, colorScheme))
+            : _hexToRGBA(_getFilledColor(colorScheme));
+        const glowR = h * 1.5;
+        const pat = new imports.cairo.RadialGradient(
+          fillW,
+          h / 2,
+          0,
+          fillW,
+          h / 2,
+          glowR,
+        );
+        pat.addColorStopRGBA(0, edgeColor[0], edgeColor[1], edgeColor[2], 0.6);
+        pat.addColorStopRGBA(1, edgeColor[0], edgeColor[1], edgeColor[2], 0.0);
+        cr.setSource(pat);
+        cr.rectangle(Math.max(0, fillW - glowR), 0, glowR * 2, h);
+        cr.fill();
+      }
+    }
+
+    // ── Vertical bar drawing ─────────────────────────────────
+
+    _drawVBar(area) {
+      const [w, h] = area.get_surface_size();
+      const cr = area.get_context();
+      const frac = Math.min(Math.max(area._fraction || 0, 0), 1.0);
+      const fillH = Math.round(frac * h);
+
+      // Background track
+      cr.setSourceRGBA(0.3, 0.3, 0.3, 0.6);
+      cr.rectangle(0, 0, w, h);
+      cr.fill();
+
+      // Filled portion (bottom-up gradient)
+      if (fillH > 0) {
+        const pat = new imports.cairo.LinearGradient(0, h, 0, h - fillH);
+        const c1 = _hexToRGBA(area._color1 || "#64dc8e");
+        const c2 = _hexToRGBA(area._color2 || "#ffb400");
+        pat.addColorStopRGBA(0, c1[0], c1[1], c1[2], 1);
+        pat.addColorStopRGBA(1, c2[0], c2[1], c2[2], 1);
+        cr.setSource(pat);
+        cr.rectangle(0, h - fillH, w, fillH);
+        cr.fill();
+      }
+
+      cr.$dispose();
+    }
+
+    _updateVBar(fraction, stats, plan, barMetric) {
+      const barStyle = this._settings.get_string("bar-style");
+
+      this._vbar._fraction = fraction;
+      this._vbar._color1 = "#64dc8e";
+      this._vbar._color2 = "#ffb400";
+      this._vbar.visible = true;
+      this._vbar.queue_repaint();
+
+      if (barStyle === "vbar-dual" && plan) {
+        const frac2 =
+          barMetric === "tokens"
+            ? stats.totalCost / plan.cost
+            : stats.billableTokens / plan.tokens;
+        this._vbar2._fraction = frac2;
+        this._vbar2._color1 = "#5b9bf5";
+        this._vbar2._color2 = "#5b9bf5";
+        this._vbar2.visible = true;
+        this._vbar2.queue_repaint();
+      }
+    }
+
+    // ── Animations ───────────────────────────────────────────
+
+    _animateHBar(targetFraction) {
+      const startFrac = this._hbar._fraction;
+      const endFrac = targetFraction;
+
+      if (this._hbarTimeline) {
+        this._hbarTimeline.stop();
+        this._hbarTimeline = null;
+      }
+
+      // Skip animation if change is tiny
+      if (Math.abs(endFrac - startFrac) < 0.005) {
+        this._hbar._fraction = endFrac;
+        this._hbar.queue_repaint();
+        return;
+      }
+
+      this._hbarTimeline = new Clutter.Timeline({
+        duration: 400,
+        actor: this._hbar,
+      });
+
+      this._hbarTimeline.connect("new-frame", (_timeline) => {
+        const progress = _timeline.get_progress();
+        this._hbar._fraction = startFrac + (endFrac - startFrac) * progress;
+        this._hbar.queue_repaint();
+      });
+
+      this._hbarTimeline.connect("completed", () => {
+        this._hbar._fraction = endFrac;
+        this._hbar.queue_repaint();
+        this._hbarTimeline = null;
+      });
+
+      this._hbarTimeline.start();
+    }
+
+    _updatePulseAnimation(fraction) {
+      const enablePulse = this._settings.get_boolean("enable-pulse");
+      const threshold = this._settings.get_int("pulse-threshold") / 100;
+      if (enablePulse && fraction > threshold) {
+        if (!this._isPulsing) {
+          this._isPulsing = true;
+          this._pulseLoop();
+        }
+      } else {
+        if (this._isPulsing) {
+          this._isPulsing = false;
+          if (this._pulseTimerId) {
+            GLib.source_remove(this._pulseTimerId);
+            this._pulseTimerId = null;
+          }
+          this._box.remove_all_transitions();
+          this._box.set_opacity(255);
+        }
+      }
+    }
+
+    _pulseLoop() {
+      if (!this._isPulsing) return;
+
+      // Use a GLib timer to alternate opacity, avoiding recursion from
+      // synchronous onComplete callbacks when the actor isn't mapped.
+      if (this._pulseTimerId) return; // already running
+
+      let dim = true;
+      this._pulseTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
+        if (!this._isPulsing) {
+          this._pulseTimerId = null;
+          this._box.set_opacity(255);
+          return GLib.SOURCE_REMOVE;
+        }
+        this._box.ease({
+          opacity: dim ? 140 : 255,
+          duration: 600,
+          mode: Clutter.AnimationMode.EASE_IN_OUT_SINE,
+        });
+        dim = !dim;
+        return GLib.SOURCE_CONTINUE;
+      });
+    }
+
+    _reorderElements() {
+      const orderStr = this._settings.get_string("element-order");
+      const order = orderStr.split(",").map((s) => s.trim()).filter(Boolean);
+
+      // Remove all children from box
+      this._box.remove_all_children();
+
+      // Re-add in specified order
+      for (const key of order) {
+        const widget = this._elementWidgets[key];
+        if (widget) {
+          this._box.add_child(widget);
+        }
+      }
+
+      // Add any widgets not in the order string (safety net)
+      for (const [key, widget] of Object.entries(this._elementWidgets)) {
+        if (!order.includes(key) && widget.get_parent() !== this._box) {
+          this._box.add_child(widget);
+        }
+      }
+    }
+
+    _spinIcon() {
+      if (this._iconContainer.visible) {
+        this._icon.ease({
+          rotation_angle_z: 360,
+          duration: 500,
+          mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+          onComplete: () => {
+            this._icon.rotation_angle_z = 0;
+          },
+        });
+      }
+    }
+
+    _fadeUpdateLabel(markup) {
+      this._label.ease({
+        opacity: 80,
+        duration: 150,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        onComplete: () => {
+          this._label.clutter_text.set_markup(markup);
+          this._label.ease({
+            opacity: 255,
+            duration: 250,
+            mode: Clutter.AnimationMode.EASE_IN_QUAD,
+          });
+        },
+      });
+    }
+
+    // ── Pill background ──────────────────────────────────────
+
+    _updatePillBackground() {
+      const pill = this._settings.get_string("pill-background");
+      // Remove all pill classes
+      this.remove_style_class_name("claude-pill-solid");
+      this.remove_style_class_name("claude-pill-subtle");
+      this.remove_style_class_name("claude-pill-border");
+      this.remove_style_class_name("claude-pill-glow");
+      this.remove_style_class_name("claude-pill-status-ok");
+      this.remove_style_class_name("claude-pill-status-warn");
+      this.remove_style_class_name("claude-pill-status-danger");
+
+      if (pill === "solid") this.add_style_class_name("claude-pill-solid");
+      else if (pill === "subtle")
+        this.add_style_class_name("claude-pill-subtle");
+      else if (pill === "border-only")
+        this.add_style_class_name("claude-pill-border");
+      else if (pill === "glow") this.add_style_class_name("claude-pill-glow");
+      // "status" is handled dynamically in _updateDisplay
+    }
+
+    _updateStatusPill(fraction) {
+      this.remove_style_class_name("claude-pill-status-ok");
+      this.remove_style_class_name("claude-pill-status-warn");
+      this.remove_style_class_name("claude-pill-status-danger");
+
+      if (fraction < 0.5) this.add_style_class_name("claude-pill-status-ok");
+      else if (fraction < 0.8)
+        this.add_style_class_name("claude-pill-status-warn");
+      else this.add_style_class_name("claude-pill-status-danger");
+    }
+
+    // ── Menu building ────────────────────────────────────────
+
     _buildMenu() {
-      // Header
+      this._dropdownStyle = this._settings.get_string("dropdown-style");
+
+      if (this._dropdownStyle === "modern") {
+        this._buildModernMenu();
+      } else if (this._dropdownStyle === "gauges") {
+        this._buildGaugeMenu();
+      } else {
+        this._buildClassicMenu();
+      }
+    }
+
+    _rebuildMenu() {
+      this.menu.removeAll();
+      this._buildMenu();
+      this._refresh();
+    }
+
+    _buildClassicMenu() {
       this._headerItem = new PopupMenu.PopupMenuItem("Claude Token Monitor", {
         reactive: false,
       });
@@ -575,7 +1226,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._burnTokensItem = this._addInfoItem("Burn rate", "--");
       this._burnCostItem = this._addInfoItem("Cost rate", "--");
       this._timeRemainingItem = this._addInfoItem("Time remaining", "--");
-      this._windowResetItem = this._addInfoItem("Window resets in", "--");
+      this._windowResetItem = this._addInfoItem("Window resets", "--");
 
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -594,19 +1245,342 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this.menu.addMenuItem(settingsItem);
     }
 
+    _buildModernMenu() {
+      // Apply frosted glass
+      this.menu.box.add_style_class_name("claude-dropdown-frosted");
+
+      this._headerItem = new PopupMenu.PopupMenuItem("", {
+        reactive: false,
+      });
+      this._headerItem.add_style_class_name("claude-monitor-header");
+      this._headerItem.label.clutter_text.set_markup(
+        `<b>Claude Token Monitor</b>`,
+      );
+      this.menu.addMenuItem(this._headerItem);
+
+      // Progress bar row
+      this._progressItem = new PopupMenu.PopupMenuItem("", {
+        reactive: false,
+      });
+      this._progressItem.add_style_class_name("claude-monitor-progress");
+      this.menu.addMenuItem(this._progressItem);
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // Token breakdown with colored dots
+      this._inputItem = this._addModernItem("\u25CF", "#5b9bf5", "Input", "--");
+      this._outputItem = this._addModernItem(
+        "\u25CF",
+        "#64dc8e",
+        "Output",
+        "--",
+      );
+      this._cacheCreateItem = this._addModernItem(
+        "\u25CF",
+        "#c4a0ff",
+        "Cache create",
+        "--",
+      );
+      this._cacheReadItem = this._addModernItem(
+        "\u25CF",
+        "#666666",
+        "Cache read",
+        "--",
+      );
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // Burn rate & timing
+      this._burnCostItem = this._addModernItem(
+        "\u26A1",
+        null,
+        "Burn rate",
+        "--",
+      );
+
+      // Sparkline
+      this._sparklineItem = new PopupMenu.PopupMenuItem("", {
+        reactive: false,
+      });
+      this._sparklineArea = new St.DrawingArea();
+      this._sparklineArea.set_size(200, 30);
+      this._sparklineArea.connect("repaint", (area) =>
+        this._drawSparkline(area),
+      );
+      this._sparklineItem.add_child(this._sparklineArea);
+      this.menu.addMenuItem(this._sparklineItem);
+
+      this._timeRemainingItem = this._addModernItem(
+        "\u23F1",
+        null,
+        "Time remaining",
+        "--",
+      );
+      this._windowResetItem = this._addModernItem(
+        "\u21BB",
+        null,
+        "Window resets",
+        "--",
+      );
+      this._sessionItem = this._addModernItem(
+        "\uD83D\uDCAC",
+        null,
+        "Session",
+        "--",
+      );
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      const refreshItem = new PopupMenu.PopupMenuItem("\u21BB Refresh");
+      refreshItem.connect("activate", () => this._refresh());
+      this.menu.addMenuItem(refreshItem);
+
+      const settingsItem = new PopupMenu.PopupMenuItem("\u2699 Settings");
+      settingsItem.connect("activate", () => {
+        this._extension.openPreferences();
+      });
+      this.menu.addMenuItem(settingsItem);
+    }
+
+    _buildGaugeMenu() {
+      // Apply frosted glass
+      this.menu.box.add_style_class_name("claude-dropdown-frosted");
+
+      this._headerItem = new PopupMenu.PopupMenuItem("", {
+        reactive: false,
+      });
+      this._headerItem.add_style_class_name("claude-monitor-header");
+      this._headerItem.label.clutter_text.set_markup(
+        `<b>Claude Token Monitor</b>`,
+      );
+      this.menu.addMenuItem(this._headerItem);
+
+      // Gauge area
+      this._gaugeItem = new PopupMenu.PopupMenuItem("", { reactive: false });
+      this._gaugeArea = new St.DrawingArea();
+      this._gaugeArea.set_size(200, 100);
+      this._gaugeArea._fraction = 0;
+      this._gaugeArea._fraction2 = 0;
+      this._gaugeArea._colorScheme = "white";
+      this._gaugeArea.connect("repaint", (area) => this._drawGauge(area));
+      this._gaugeItem.add_child(this._gaugeArea);
+      this.menu.addMenuItem(this._gaugeItem);
+
+      // Usage text below gauge
+      this._gaugeLabel = new PopupMenu.PopupMenuItem("", { reactive: false });
+      this.menu.addMenuItem(this._gaugeLabel);
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // Token breakdown
+      this._inputItem = this._addModernItem("\u25CF", "#5b9bf5", "Input", "--");
+      this._outputItem = this._addModernItem(
+        "\u25CF",
+        "#64dc8e",
+        "Output",
+        "--",
+      );
+      this._cacheCreateItem = this._addModernItem(
+        "\u25CF",
+        "#c4a0ff",
+        "Cache create",
+        "--",
+      );
+      this._cacheReadItem = this._addModernItem(
+        "\u25CF",
+        "#666666",
+        "Cache read",
+        "--",
+      );
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      this._burnCostItem = this._addModernItem(
+        "\u26A1",
+        null,
+        "Burn rate",
+        "--",
+      );
+      this._timeRemainingItem = this._addModernItem(
+        "\u23F1",
+        null,
+        "Time remaining",
+        "--",
+      );
+      this._windowResetItem = this._addModernItem(
+        "\u21BB",
+        null,
+        "Window resets",
+        "--",
+      );
+      this._sessionItem = this._addModernItem(
+        "\uD83D\uDCAC",
+        null,
+        "Session",
+        "--",
+      );
+
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      const refreshItem = new PopupMenu.PopupMenuItem("\u21BB Refresh");
+      refreshItem.connect("activate", () => this._refresh());
+      this.menu.addMenuItem(refreshItem);
+
+      const settingsItem = new PopupMenu.PopupMenuItem("\u2699 Settings");
+      settingsItem.connect("activate", () => {
+        this._extension.openPreferences();
+      });
+      this.menu.addMenuItem(settingsItem);
+    }
+
+    // ── Sparkline drawing ────────────────────────────────────
+
+    _drawSparkline(area) {
+      const [w, h] = area.get_surface_size();
+      const cr = area.get_context();
+      const data = this._burnHistory;
+
+      if (data.length < 2) {
+        cr.setSourceRGBA(0.4, 0.4, 0.4, 0.3);
+        cr.setFontSize(10);
+        cr.moveTo(w / 2 - 30, h / 2 + 3);
+        cr.showText("Collecting data...");
+        cr.$dispose();
+        return;
+      }
+
+      const max = Math.max(...data, 0.01);
+      const barW = Math.max(Math.floor(w / data.length) - 1, 2);
+      const gap = 1;
+
+      for (let i = 0; i < data.length; i++) {
+        const barH = Math.max((data[i] / max) * h, 1);
+        const frac = data[i] / max;
+        // Green to yellow to red gradient
+        const r = frac < 0.5 ? frac * 2 : 1;
+        const g = frac < 0.5 ? 0.86 : 1 - (frac - 0.5) * 2;
+        cr.setSourceRGBA(r, g, 0.3, 0.7 + 0.3 * frac);
+        _roundedRect(cr, i * (barW + gap), h - barH, barW, barH, 1);
+        cr.fill();
+      }
+
+      cr.$dispose();
+    }
+
+    // ── Gauge drawing ────────────────────────────────────────
+
+    _drawGauge(area) {
+      const [w, h] = area.get_surface_size();
+      const cr = area.get_context();
+      const frac1 = Math.min(Math.max(area._fraction || 0, 0), 1.0);
+      const frac2 = Math.min(Math.max(area._fraction2 || 0, 0), 1.0);
+      const colorScheme = area._colorScheme || "white";
+      const scheme = BAR_COLORS[colorScheme] || BAR_COLORS["white"];
+
+      const cx = w / 2;
+      const cy = h / 2;
+      const outerR = Math.min(w, h) / 2 - 8;
+      const innerR = outerR - 12;
+      const lineW = 6;
+
+      // Outer ring track
+      cr.setLineWidth(lineW);
+      cr.setLineCap(1); // ROUND
+      cr.setSourceRGBA(0.15, 0.15, 0.2, 0.6);
+      cr.arc(cx, cy, outerR, -Math.PI * 0.75, Math.PI * 0.75);
+      cr.stroke();
+
+      // Outer ring fill (cost)
+      if (frac1 > 0) {
+        const endAngle =
+          -Math.PI * 0.75 + frac1 * Math.PI * 1.5;
+        if (scheme.gradient || colorScheme === "custom") {
+          const c = _hexToRGBA(_getGradientColor(frac1, colorScheme));
+          cr.setSourceRGBA(c[0], c[1], c[2], 1);
+        } else {
+          const c = _hexToRGBA(_getFilledColor(colorScheme));
+          cr.setSourceRGBA(c[0], c[1], c[2], 1);
+        }
+        cr.arc(cx, cy, outerR, -Math.PI * 0.75, endAngle);
+        cr.stroke();
+      }
+
+      // Inner ring track
+      cr.setLineWidth(lineW - 1);
+      cr.setSourceRGBA(0.15, 0.15, 0.2, 0.4);
+      cr.arc(cx, cy, innerR, -Math.PI * 0.75, Math.PI * 0.75);
+      cr.stroke();
+
+      // Inner ring fill (tokens)
+      if (frac2 > 0) {
+        const endAngle =
+          -Math.PI * 0.75 + frac2 * Math.PI * 1.5;
+        cr.setSourceRGBA(0.36, 0.61, 0.96, 1); // blue
+        cr.arc(cx, cy, innerR, -Math.PI * 0.75, endAngle);
+        cr.stroke();
+      }
+
+      // Center text
+      cr.setSourceRGBA(0.9, 0.9, 0.9, 1);
+      cr.setFontSize(16);
+      const pctText = `${Math.round(frac1 * 100)}%`;
+      const extents = cr.textExtents(pctText);
+      cr.moveTo(cx - extents.width / 2, cy + extents.height / 4);
+      cr.showText(pctText);
+
+      cr.$dispose();
+    }
+
+    // ── Menu helpers ─────────────────────────────────────────
+
     _addInfoItem(label, value) {
       const item = new PopupMenu.PopupMenuItem("", { reactive: false });
-      item.label.clutter_text.set_markup(`<b>${label}:</b>  ${value}`);
+      item.label.clutter_text.set_markup(`<b>${label}</b>`);
+      item.label.x_expand = true;
+
+      const valueLabel = new St.Label({
+        text: value,
+        x_align: Clutter.ActorAlign.END,
+        x_expand: true,
+        style_class: "claude-monitor-value",
+      });
+      item.add_child(valueLabel);
+      item._valueLabel = valueLabel;
       item._labelPrefix = label;
       this.menu.addMenuItem(item);
       return item;
     }
 
-    _updateInfoItem(item, value) {
-      item.label.clutter_text.set_markup(
-        `<b>${item._labelPrefix}:</b>  ${value}`,
-      );
+    _addModernItem(icon, iconColor, label, value) {
+      const item = new PopupMenu.PopupMenuItem("", { reactive: false });
+      const iconMarkup = iconColor
+        ? `<span foreground="${iconColor}">${icon}</span>`
+        : icon;
+      item.label.clutter_text.set_markup(`${iconMarkup}  ${label}`);
+      item.label.x_expand = true;
+
+      const valueLabel = new St.Label({
+        x_align: Clutter.ActorAlign.END,
+        x_expand: true,
+        style_class: "claude-monitor-value",
+      });
+      valueLabel.clutter_text.set_markup(value);
+      item.add_child(valueLabel);
+      item._valueLabel = valueLabel;
+      item._labelPrefix = label;
+      item._icon = icon;
+      item._iconColor = iconColor;
+      this.menu.addMenuItem(item);
+      return item;
     }
+
+    _updateInfoItem(item, value) {
+      if (item && item._valueLabel) {
+        item._valueLabel.clutter_text.set_markup(value);
+      }
+    }
+
+    // ── Timer ────────────────────────────────────────────────
 
     _startTimer() {
       const interval = this._settings.get_int("refresh-interval");
@@ -627,30 +1601,30 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       }
     }
 
+    // ── Refresh ──────────────────────────────────────────────
+
     _refresh() {
+      // Brief spin animation on refresh
+      this._spinIcon();
+
       const basePath = GLib.get_home_dir() + "/.claude/projects";
       const now = new Date();
       const nowMs = now.getTime();
 
-      // Look back far enough to detect session boundaries
       const lookbackMs = nowMs - LOOKBACK_HOURS * 3600000;
       const lookbackSecs = Math.floor(lookbackMs / 1000);
 
-      // Discover all recent files and parse entries from the lookback window
       const files = _findRecentJsonlFiles(basePath, lookbackSecs);
       const allEntries = _readAndParseJsonl(files, lookbackMs);
 
-      // Detect the actual session window from entry timestamps
       const windowStart = _detectSessionStart(allEntries, nowMs);
 
       if (windowStart === null) {
-        // No active session — show idle state
         const stats = _calculateStats([]);
         this._updateDisplay(stats, null);
         return;
       }
 
-      // Filter entries to the detected window [windowStart, windowStart + 5h)
       const windowEnd = windowStart + SESSION_HOURS * 3600000;
       const windowEntries = allEntries.filter(
         (e) => e.timestamp >= windowStart && e.timestamp < windowEnd,
@@ -660,15 +1634,22 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const resetMs = windowEnd - nowMs;
       const resetMinutes = Math.max(0, resetMs / 60000);
 
+      // Track burn history for sparkline
+      this._burnHistory.push(stats.burnRateCostH);
+      if (this._burnHistory.length > 20)
+        this._burnHistory = this._burnHistory.slice(-20);
+
       this._updateDisplay(stats, resetMinutes);
     }
+
+    // ── Main display update ──────────────────────────────────
 
     _updateDisplay(stats, resetMinutes) {
       const planType = this._settings.get_string("plan-type");
       const plan = PLAN_LIMITS[planType];
       const barMetric = this._settings.get_string("bar-metric");
 
-      // Apply estimation scale factor to final counts
+      // Apply estimation scale factor
       const estMode = this._settings.get_string("estimation-mode");
       const scaleFactor =
         ESTIMATION_MODES[estMode] || ESTIMATION_MODES["balanced"];
@@ -677,7 +1658,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       stats.burnRateCostH *= scaleFactor;
       stats.burnRateTokensH *= scaleFactor;
 
-      // Calculate time remaining based on the chosen metric's burn rate
+      // Calculate time remaining
       let timeRemainingMin = Infinity;
       if (plan) {
         if (barMetric === "tokens" && stats.burnRateTokensH > 0) {
@@ -691,95 +1672,179 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         }
       }
 
-      // Read display settings
+      // Read toggle settings
+      const showIcon = this._settings.get_boolean("show-icon");
+      const showBar = this._settings.get_boolean("show-bar");
+      const showPct = this._settings.get_boolean("show-percentage");
+      const showTime = this._settings.get_boolean("show-time");
+      const showDot = this._settings.get_boolean("show-status-dot");
+      const showBadge = this._settings.get_boolean("show-status-badge");
       const showPrefix = this._settings.get_boolean("show-prefix");
       const prefixStyle = this._settings.get_string("prefix-style");
       const barLength = this._settings.get_int("bar-length");
       const barStyle = this._settings.get_string("bar-style");
       const barColor = this._settings.get_string("bar-color");
       const timeDisplay = this._settings.get_string("time-display");
+      const pillBg = this._settings.get_string("pill-background");
+      const textEffect = this._settings.get_string("text-effect");
 
-      // Icon vs text prefix
-      if (showPrefix && prefixStyle === "icon") {
-        const iconPath = this._extensionPath + "/icons/claude.png";
-        const gicon = Gio.icon_new_for_string(iconPath);
-        this._icon.set_gicon(gicon);
-        this._icon.visible = true;
-      } else {
-        this._icon.visible = false;
-      }
+      // Update custom color module vars
+      _customColorStart =
+        this._settings.get_string("custom-color-start") || "#5b9bf5";
+      _customColorEnd =
+        this._settings.get_string("custom-color-end") || "#c4a0ff";
 
-      const textPrefix = showPrefix && prefixStyle === "text" ? "Claude " : "";
-      let timeSuffix = "";
-      if (timeDisplay === "remaining") {
-        timeSuffix = ` ${_formatTimeRemaining(timeRemainingMin)}`;
-      } else if (timeDisplay === "reset") {
-        timeSuffix =
-          resetMinutes !== null ? ` ${_formatResetTime(resetMinutes)}` : "";
-      }
-
-      // Bar fraction based on metric — _makeBar returns Pango markup
-      let panelMarkup;
-      if (stats.entryCount === 0) {
-        panelMarkup = `${textPrefix}idle`;
-      } else if (plan) {
-        const fraction =
+      // Compute fraction
+      let fraction = 0;
+      if (plan && stats.entryCount > 0) {
+        fraction =
           barMetric === "tokens"
             ? stats.billableTokens / plan.tokens
             : stats.totalCost / plan.cost;
-        const bar = _makeBar(fraction, barLength, barStyle, barColor);
-        panelMarkup = `${textPrefix}\u200B${bar} ${timeSuffix}`;
-      } else {
-        panelMarkup = `${textPrefix}${_formatTokens(stats.billableTokens)} \u2191${timeSuffix}`;
       }
-      this._label.clutter_text.set_markup(panelMarkup);
+      const pct = Math.min(fraction * 100, 999).toFixed(0);
 
-      // Dropdown menu items — show used / limit
-      this._updateInfoItem(this._modelItem, stats.activeModel || "none");
+      // Status color
+      const dotColor =
+        fraction < 0.5
+          ? "#8ff0a4"
+          : fraction < 0.8
+            ? "#f9f06b"
+            : "#ff7b63";
 
+      // ── Icon ──
+      const isCairoBar = CAIRO_BAR_STYLES.has(barStyle);
+      const isVBar = barStyle === "vbar" || barStyle === "vbar-dual";
+
+      if (showIcon && prefixStyle !== "text") {
+        let iconPath;
+        if (prefixStyle === "symbolic") {
+          iconPath = this._extensionPath + "/icons/claude-symbolic.svg";
+        } else {
+          iconPath = this._extensionPath + "/icons/claude.png";
+        }
+        const gicon = Gio.icon_new_for_string(iconPath);
+        this._icon.set_gicon(gicon);
+        this._iconContainer.visible = true;
+      } else {
+        this._iconContainer.visible = false;
+      }
+
+      // ── Status badge on icon ──
+      if (showBadge && this._iconContainer.visible) {
+        this._iconBadge.visible = true;
+        this._iconBadge.style = `color: ${dotColor}; font-size: 7px;`;
+      } else {
+        this._iconBadge.visible = false;
+      }
+
+      // ── Status dot ──
+      this._statusDot.visible = showDot;
+      if (showDot) {
+        this._statusDot.style = `color: ${dotColor};`;
+      }
+
+      // ── Status pill background ──
+      if (pillBg === "status") {
+        this._updateStatusPill(fraction);
+      }
+
+      // ── Bars: hide all first ──
+      this._hbar.visible = false;
+      this._vbar.visible = false;
+      this._vbar2.visible = false;
+
+      // ── Build label parts ──
+      let labelParts = [];
+
+      // Text prefix
+      if (showPrefix && prefixStyle === "text") {
+        labelParts.push("Claude");
+      }
+
+      if (stats.entryCount === 0) {
+        labelParts.push("idle");
+      } else {
+        // Bar
+        if (showBar && plan) {
+          if (isVBar) {
+            this._updateVBar(fraction, stats, plan, barMetric);
+          } else if (isCairoBar) {
+            const barW = barLength * 8;
+            const barH = barStyle === "thick-rounded" ? 14 : 10;
+            this._hbar.set_size(barW, barH);
+            this._hbar._style = barStyle;
+            this._hbar._colorScheme = barColor;
+            this._hbar._barLength = barLength;
+            this._hbar.visible = true;
+            this._animateHBar(fraction);
+          } else {
+            // Unicode bar in label
+            const bar = _makeBar(fraction, barLength, barStyle, barColor);
+            labelParts.push(`\u200B${bar}`);
+          }
+        }
+
+        // Percentage
+        if (showPct && plan) {
+          labelParts.push(`${pct}%`);
+        }
+
+        // Time
+        if (showTime) {
+          let timeSuffix = "";
+          if (timeDisplay === "remaining") {
+            timeSuffix = _formatTimeRemaining(timeRemainingMin);
+          } else if (timeDisplay === "reset" && resetMinutes !== null) {
+            timeSuffix = _formatResetTime(resetMinutes);
+          }
+          if (timeSuffix) labelParts.push(timeSuffix);
+        }
+
+        // Text-only mode (no bar but show value)
+        if (!showBar && !showPct && !showDot && plan) {
+          const val =
+            barMetric === "tokens"
+              ? `${_formatTokens(stats.billableTokens)} / ${_formatTokens(plan.tokens)}`
+              : `${_formatCost(stats.totalCost)} / ${_formatCost(plan.cost)}`;
+          labelParts.push(val);
+        }
+      }
+
+      let panelMarkup = labelParts.join(" ");
+
+      // Text effect
+      if (textEffect === "glow" && stats.entryCount > 0) {
+        const glowColor =
+          barColor === "purple" || barColor === "dracula"
+            ? "#d0a0ff"
+            : barColor === "neon"
+              ? "#00ffff"
+              : barColor === "blue" || barColor === "nord"
+                ? "#88c0ff"
+                : "#ffffff";
+        panelMarkup = `<span foreground="${glowColor}">${panelMarkup}</span>`;
+      } else if (textEffect === "shadow" && stats.entryCount > 0) {
+        panelMarkup = `<span foreground="#999999">${panelMarkup}</span>`;
+      }
+
+      // Hide label if empty (avoids extra padding when only icon+bar shown)
+      this._label.visible = labelParts.length > 0;
+
+      // Apply label with fade animation
+      this._fadeUpdateLabel(panelMarkup);
+
+      // Pulse animation at high usage
+      this._updatePulseAnimation(fraction);
+
+      // ── Update dropdown menu ──────────────────────────────
       const durH = Math.floor(stats.durationMinutes / 60);
       const durM = Math.round(stats.durationMinutes % 60);
       const sessionStr =
         stats.entryCount > 0
           ? `${durH}h ${durM}m (${stats.entryCount} messages)`
           : "No activity";
-      this._updateInfoItem(this._sessionItem, sessionStr);
 
-      // Token breakdown: billable = in + out + cache_create (cache_read is free toward limit)
-      const tLim = plan ? ` / ${_formatTokens(plan.tokens)}` : "";
-      this._updateInfoItem(this._inputItem, _formatTokens(stats.totalInput));
-      this._updateInfoItem(this._outputItem, _formatTokens(stats.totalOutput));
-      this._updateInfoItem(
-        this._cacheCreateItem,
-        _formatTokens(stats.totalCacheCreate),
-      );
-      this._updateInfoItem(
-        this._cacheReadItem,
-        _formatTokens(stats.totalCacheRead),
-      );
-      this._updateInfoItem(
-        this._totalItem,
-        `${_formatTokens(stats.billableTokens)}${tLim}`,
-      );
-
-      // Cost with plan limit
-      const cLim = plan ? ` / ${_formatCost(plan.cost)}` : "";
-      this._updateInfoItem(
-        this._costItem,
-        `${_formatCost(stats.totalCost)}${cLim}`,
-      );
-      this._updateInfoItem(
-        this._burnTokensItem,
-        `${_formatTokens(Math.round(stats.burnRateTokensH))}/h`,
-      );
-      this._updateInfoItem(
-        this._burnCostItem,
-        `${_formatCost(stats.burnRateCostH)}/h`,
-      );
-      this._updateInfoItem(
-        this._timeRemainingItem,
-        _formatTimeRemaining(timeRemainingMin),
-      );
       let resetStr = _formatResetTime(resetMinutes);
       if (resetMinutes !== null && resetMinutes > 0) {
         const resetDate = new Date(Date.now() + resetMinutes * 60000);
@@ -787,24 +1852,203 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         const mm = resetDate.getMinutes().toString().padStart(2, "0");
         resetStr += ` (${hh}:${mm})`;
       }
-      this._updateInfoItem(this._windowResetItem, resetStr);
 
-      if (plan) {
-        const pctTokens = ((stats.billableTokens / plan.tokens) * 100).toFixed(
-          1,
-        );
-        const pctCost = ((stats.totalCost / plan.cost) * 100).toFixed(1);
+      if (this._dropdownStyle === "gauges") {
+        // Gauge dropdown
+        if (this._gaugeArea) {
+          this._gaugeArea._fraction = plan
+            ? stats.totalCost / plan.cost
+            : 0;
+          this._gaugeArea._fraction2 = plan
+            ? stats.billableTokens / plan.tokens
+            : 0;
+          this._gaugeArea._colorScheme = barColor;
+          this._gaugeArea.queue_repaint();
+        }
+
+        if (this._gaugeLabel && plan) {
+          const pctCost = ((stats.totalCost / plan.cost) * 100).toFixed(0);
+          const pctTokens = (
+            (stats.billableTokens / plan.tokens) *
+            100
+          ).toFixed(0);
+          this._gaugeLabel.label.clutter_text.set_markup(
+            `<span foreground="#ffb74d">\u25CF</span> Cost: ${_formatCost(stats.totalCost)} (${pctCost}%)  ` +
+              `<span foreground="#5b9bf5">\u25CF</span> Tokens: ${_formatTokens(stats.billableTokens)} (${pctTokens}%)`,
+          );
+        }
+
+        // Shared items
         this._updateInfoItem(
-          this._planItem,
-          `${pctTokens}% tokens, ${pctCost}% cost (${plan.label})`,
+          this._inputItem,
+          _formatTokens(stats.totalInput),
         );
+        this._updateInfoItem(
+          this._outputItem,
+          _formatTokens(stats.totalOutput),
+        );
+        this._updateInfoItem(
+          this._cacheCreateItem,
+          _formatTokens(stats.totalCacheCreate),
+        );
+        this._updateInfoItem(
+          this._cacheReadItem,
+          _formatTokens(stats.totalCacheRead),
+        );
+        this._updateInfoItem(
+          this._burnCostItem,
+          `${_formatCost(stats.burnRateCostH)}/h`,
+        );
+        this._updateInfoItem(
+          this._timeRemainingItem,
+          _formatTimeRemaining(timeRemainingMin),
+        );
+        this._updateInfoItem(this._windowResetItem, resetStr);
+        this._updateInfoItem(this._sessionItem, sessionStr);
+      } else if (this._dropdownStyle === "modern") {
+        // Modern dropdown
+        if (this._progressItem) {
+          if (plan) {
+            const pctNum = Math.min(fraction * 100, 100).toFixed(0);
+            const barColor2 =
+              fraction < 0.5
+                ? "#64dc8e"
+                : fraction < 0.8
+                  ? "#ffb400"
+                  : "#ff4444";
+            const usedStr =
+              barMetric === "tokens"
+                ? `${_formatTokens(stats.billableTokens)} used`
+                : `${_formatCost(stats.totalCost)} used`;
+            const limitStr =
+              barMetric === "tokens"
+                ? `${_formatTokens(plan.tokens)} limit`
+                : `${_formatCost(plan.cost)} limit`;
+            const barWidth = Math.min(Math.round(fraction * 20), 20);
+            const barEmpty = 20 - barWidth;
+            const progressBar =
+              `<span foreground="${barColor2}">${"\u2588".repeat(barWidth)}</span>` +
+              `<span foreground="#333333">${"\u2588".repeat(barEmpty)}</span>`;
+            this._progressItem.label.clutter_text.set_markup(
+              `${progressBar}  <b>${pctNum}%</b>\n` +
+                `<span size="small" foreground="#888888">${usedStr}  \u2022  ${limitStr}</span>`,
+            );
+            this._headerItem.label.clutter_text.set_markup(
+              `<b>Claude Token Monitor</b>    <span size="small" foreground="#c4a0ff">${plan.label}</span>`,
+            );
+          } else {
+            this._progressItem.label.clutter_text.set_markup(
+              "No plan configured",
+            );
+            this._headerItem.label.clutter_text.set_markup(
+              `<b>Claude Token Monitor</b>`,
+            );
+          }
+        }
+
+        this._updateInfoItem(
+          this._inputItem,
+          _formatTokens(stats.totalInput),
+        );
+        this._updateInfoItem(
+          this._outputItem,
+          _formatTokens(stats.totalOutput),
+        );
+        this._updateInfoItem(
+          this._cacheCreateItem,
+          _formatTokens(stats.totalCacheCreate),
+        );
+        this._updateInfoItem(
+          this._cacheReadItem,
+          _formatTokens(stats.totalCacheRead),
+        );
+        this._updateInfoItem(
+          this._burnCostItem,
+          `${_formatCost(stats.burnRateCostH)}/h`,
+        );
+        this._updateInfoItem(
+          this._timeRemainingItem,
+          _formatTimeRemaining(timeRemainingMin),
+        );
+        this._updateInfoItem(this._windowResetItem, resetStr);
+        this._updateInfoItem(this._sessionItem, sessionStr);
+
+        // Sparkline repaint
+        if (this._sparklineArea) this._sparklineArea.queue_repaint();
       } else {
-        this._updateInfoItem(this._planItem, "No plan configured");
+        // Classic dropdown
+        this._updateInfoItem(this._modelItem, stats.activeModel || "none");
+        this._updateInfoItem(this._sessionItem, sessionStr);
+
+        const tLim = plan ? ` / ${_formatTokens(plan.tokens)}` : "";
+        this._updateInfoItem(
+          this._inputItem,
+          _formatTokens(stats.totalInput),
+        );
+        this._updateInfoItem(
+          this._outputItem,
+          _formatTokens(stats.totalOutput),
+        );
+        this._updateInfoItem(
+          this._cacheCreateItem,
+          _formatTokens(stats.totalCacheCreate),
+        );
+        this._updateInfoItem(
+          this._cacheReadItem,
+          _formatTokens(stats.totalCacheRead),
+        );
+        this._updateInfoItem(
+          this._totalItem,
+          `${_formatTokens(stats.billableTokens)}${tLim}`,
+        );
+
+        const cLim = plan ? ` / ${_formatCost(plan.cost)}` : "";
+        this._updateInfoItem(
+          this._costItem,
+          `${_formatCost(stats.totalCost)}${cLim}`,
+        );
+        this._updateInfoItem(
+          this._burnTokensItem,
+          `${_formatTokens(Math.round(stats.burnRateTokensH))}/h`,
+        );
+        this._updateInfoItem(
+          this._burnCostItem,
+          `${_formatCost(stats.burnRateCostH)}/h`,
+        );
+        this._updateInfoItem(
+          this._timeRemainingItem,
+          _formatTimeRemaining(timeRemainingMin),
+        );
+        this._updateInfoItem(this._windowResetItem, resetStr);
+
+        if (plan) {
+          const pctTokens = (
+            (stats.billableTokens / plan.tokens) *
+            100
+          ).toFixed(1);
+          const pctCost = ((stats.totalCost / plan.cost) * 100).toFixed(1);
+          this._updateInfoItem(
+            this._planItem,
+            `${pctTokens}% tokens, ${pctCost}% cost (${plan.label})`,
+          );
+        } else {
+          this._updateInfoItem(this._planItem, "No plan configured");
+        }
       }
     }
 
     destroy() {
       this._stopTimer();
+      this._isPulsing = false;
+      if (this._pulseTimerId) {
+        GLib.source_remove(this._pulseTimerId);
+        this._pulseTimerId = null;
+      }
+      this._box.remove_all_transitions();
+      if (this._hbarTimeline) {
+        this._hbarTimeline.stop();
+        this._hbarTimeline = null;
+      }
       if (this._settingsChangedId) {
         this._settings.disconnect(this._settingsChangedId);
         this._settingsChangedId = null;

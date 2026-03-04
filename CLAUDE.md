@@ -7,23 +7,30 @@ A compact GNOME Shell 48 taskbar indicator that monitors Claude Code token usage
 ## Features
 
 - **Progress bar** showing cost or token usage against plan limits (Pro, Max 5x, Max 20x)
+- **Individual toggles**: show/hide icon, bar, percentage, time, status dot independently
 - **Time remaining** estimate until plan limit is reached
 - **Window reset countdown** with clock time in dropdown (e.g. "2h 44m reset (13:00)")
-- **Multiple bar styles**: blocks, dots, squares, thin, smooth
-- **Color schemes**: white, green-to-red gradient, blue, purple, amber, rainbow
-- **Prefix options**: "Claude" text label or Claude icon
+- **Bar styles**: Unicode (blocks, dots, squares, thin, smooth) + Cairo-rendered (pill, thick-rounded, segmented, glow-edge) + vertical (vbar, vbar-dual)
+- **Color schemes**: white, green-red, blue, purple, amber, rainbow, dracula, nord, catppuccin, neon, sunset, ocean, solarized, system accent, custom gradient
+- **Pill backgrounds**: off, solid, subtle, border-only, status-aware (green/yellow/red), neon glow
+- **Prefix options**: "Claude" text, Claude icon, or symbolic SVG icon (theme-adaptive)
+- **Animations**: smooth bar fill, pulse at >80% usage, icon spin on refresh, label fade on update
+- **Middle-click** to cycle bar styles
+- **Dropdown styles**: classic (text rows), modern (progress bar + sparkline + colored dots), gauges (circular arc gauges)
+- **Typography**: font size (small/medium/large), text effects (glow/shadow)
+- **Status badge**: colored dot overlay on icon corner
+- **Custom colors**: user-defined gradient via color picker in preferences
 - **Configurable**: bar length, refresh interval, panel position, metric (cost/tokens)
 - **Estimation scale factors**: conservative (0.8x), balanced (1.0x), generous (1.2x)
-- **Detailed dropdown**: token breakdown, cost, burn rate, session info, settings link
 - **Performance optimized**: mtime-based file filtering, per-file caching, string pre-filter
 
 ## Architecture
 
-- `extension.js` — Main indicator logic, data parsing, cost calculation
-- `prefs.js` — GTK4/Adw preferences window
-- `stylesheet.css` — Panel styling
+- `extension.js` — Main indicator logic, data parsing, cost calculation, Cairo bar/gauge/sparkline rendering, Clutter animations
+- `prefs.js` — GTK4/Adw preferences window (3 pages: General, Appearance, Advanced)
+- `stylesheet.css` — Panel styling (pill variants, font sizes, status classes)
 - `schemas/` — GSettings schema for user preferences
-- `icons/` — Claude logo PNGs (16px, 32px, 48px)
+- `icons/` — Claude logo PNGs (16px, 32px, 48px) + claude-symbolic.svg
 - Installed via symlink from `~/.local/share/gnome-shell/extensions/claude-monitor@miferco97/`
 
 ## Token & Cost Measurement

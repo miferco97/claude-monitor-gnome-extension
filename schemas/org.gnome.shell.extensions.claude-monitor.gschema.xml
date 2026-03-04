@@ -28,9 +28,9 @@
     </key>
 
     <key name="prefix-style" type="s">
-      <default>'text'</default>
+      <default>'icon'</default>
       <summary>Prefix style</summary>
-      <description>How to show the Claude prefix: "text" for the word, "icon" for the Claude logo.</description>
+      <description>How to show the Claude prefix: "text" for the word, "icon" for the Claude logo, "symbolic" for theme-adaptive symbolic icon.</description>
     </key>
 
     <key name="bar-length" type="i">
@@ -42,7 +42,7 @@
     <key name="bar-style" type="s">
       <default>'blocks'</default>
       <summary>Progress bar style</summary>
-      <description>Visual style for the bar: "blocks", "smooth", "dots", "squares", or "thin".</description>
+      <description>Visual style for the bar: "blocks", "smooth", "dots", "squares", "thin", "pill", "thick-rounded", "segmented", "glow-edge", "vbar", "vbar-dual".</description>
     </key>
 
     <key name="bar-metric" type="s">
@@ -54,13 +54,7 @@
     <key name="bar-color" type="s">
       <default>'white'</default>
       <summary>Bar color scheme</summary>
-      <description>Color scheme for the progress bar: "white", "green-red", "blue", "purple", "amber", or "rainbow".</description>
-    </key>
-
-    <key name="show-time-remaining" type="b">
-      <default>true</default>
-      <summary>Show time remaining</summary>
-      <description>Whether to show estimated time until plan limit is reached.</description>
+      <description>Color scheme for the progress bar: "white", "green-red", "blue", "purple", "amber", "rainbow", "dracula", "nord", "catppuccin", "neon", "sunset", "ocean", "solarized", "accent", "custom".</description>
     </key>
 
     <key name="time-display" type="s">
@@ -73,6 +67,110 @@
       <default>'balanced'</default>
       <summary>Estimation mode</summary>
       <description>How aggressively to estimate usage. "conservative" shows raw calculated values, "balanced" applies a small correction factor to approximate /usage, "generous" adds extra margin for safety.</description>
+    </key>
+
+    <!-- Individual display toggles (replace display-mode) -->
+
+    <key name="show-icon" type="b">
+      <default>true</default>
+      <summary>Show icon in panel</summary>
+      <description>Whether to show the Claude icon in the panel indicator.</description>
+    </key>
+
+    <key name="show-bar" type="b">
+      <default>true</default>
+      <summary>Show progress bar in panel</summary>
+      <description>Whether to show the progress bar in the panel indicator.</description>
+    </key>
+
+    <key name="show-percentage" type="b">
+      <default>true</default>
+      <summary>Show percentage in panel</summary>
+      <description>Whether to show the usage percentage in the panel indicator.</description>
+    </key>
+
+    <key name="show-time" type="b">
+      <default>true</default>
+      <summary>Show time info in panel</summary>
+      <description>Whether to show time information (remaining or reset countdown) in the panel indicator.</description>
+    </key>
+
+    <key name="show-status-dot" type="b">
+      <default>false</default>
+      <summary>Show status dot</summary>
+      <description>Whether to show a colored status dot indicating usage level (green/yellow/red).</description>
+    </key>
+
+    <key name="show-status-badge" type="b">
+      <default>false</default>
+      <summary>Show status badge on icon</summary>
+      <description>Whether to show a small colored dot overlay on the icon indicating usage level.</description>
+    </key>
+
+    <!-- Pill background -->
+
+    <key name="pill-background" type="s">
+      <default>'off'</default>
+      <summary>Panel button background style</summary>
+      <description>Background style for the panel button: "off" (transparent), "solid" (visible pill), "subtle" (semi-transparent), "border-only" (outline only), "status" (color changes with usage), "glow" (purple neon glow).</description>
+    </key>
+
+    <!-- Dropdown -->
+
+    <key name="dropdown-style" type="s">
+      <default>'classic'</default>
+      <summary>Dropdown menu style</summary>
+      <description>Style for the click-to-expand dropdown: "classic" (simple text rows), "modern" (progress bar, colored dots, icons, plan badge), or "gauges" (circular arc gauges).</description>
+    </key>
+
+    <!-- Typography -->
+
+    <key name="font-size" type="s">
+      <default>'medium'</default>
+      <summary>Font size</summary>
+      <description>Panel text size: "small" (10px), "medium" (12px), "large" (14px).</description>
+    </key>
+
+    <key name="text-effect" type="s">
+      <default>'none'</default>
+      <summary>Text effect</summary>
+      <description>Text visual effect: "none", "glow" (bright vivid color), "shadow" (dimmer text).</description>
+    </key>
+
+    <!-- Pulse animation -->
+
+    <key name="enable-pulse" type="b">
+      <default>true</default>
+      <summary>Enable pulse animation</summary>
+      <description>Whether to pulse/flicker the panel indicator at high usage levels.</description>
+    </key>
+
+    <key name="pulse-threshold" type="i">
+      <default>80</default>
+      <summary>Pulse activation threshold</summary>
+      <description>Usage percentage at which the pulse animation activates (50-100).</description>
+    </key>
+
+    <!-- Element order -->
+
+    <key name="element-order" type="s">
+      <default>'icon,label,bar,dot'</default>
+      <summary>Panel element order</summary>
+      <description>Comma-separated order of panel elements: icon, label, bar, dot. Controls the left-to-right arrangement.</description>
+    </key>
+
+    <!-- Custom color -->
+
+    <key name="custom-color-start" type="s">
+      <default>'#5b9bf5'</default>
+      <summary>Custom bar color start</summary>
+      <description>Start color for custom gradient bar color scheme (hex format).</description>
+    </key>
+
+    <key name="custom-color-end" type="s">
+      <default>'#c4a0ff'</default>
+      <summary>Custom bar color end</summary>
+      <description>End color for custom gradient bar color scheme (hex format).</description>
     </key>
 
   </schema>
