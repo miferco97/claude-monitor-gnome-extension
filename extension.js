@@ -33,17 +33,17 @@ const PRICING = {
 };
 
 const PLAN_LIMITS = {
-  pro: { tokens: 19000000, cost: 18.0, label: "Pro ($20/mo)" },
-  max5: { tokens: 88000000, cost: 35.0, label: "Max 5x ($100/mo)" },
-  max20: { tokens: 220000000, cost: 140.0, label: "Max 20x ($200/mo)" },
+  pro: { tokens: 19000, cost: 18.0, label: "Pro ($20/mo)" },
+  max5: { tokens: 88000, cost: 35.0, label: "Max 5x ($100/mo)" },
+  max20: { tokens: 220000, cost: 140.0, label: "Max 20x ($200/mo)" },
 };
 
-// Estimation scale factors to approximate Anthropic's /usage tracking.
-// JSONL-based calculation misses server-side overhead, so we apply a multiplier.
+// Estimation scale factors for fine-tuning against Anthropic's /usage tracking.
+// Cost calculation now includes cache tokens, so these are smaller adjustments.
 const ESTIMATION_MODES = {
-  conservative: 1.4, // Raw calculation (underestimates ~15-20%)
-  balanced: 1.6, // Approximate /usage match
-  generous: 2.0, // Safety margin (overestimates slightly)
+  conservative: 0.8, // Under-estimate
+  balanced: 1.0, // Normal (no adjustment)
+  generous: 1.2, // Over-estimate
 };
 
 // Bar style character pairs: [filled, empty]
@@ -141,6 +141,7 @@ function _hslToHex(h, s, l) {
 }
 
 const SESSION_HOURS = 5;
+const LOOKBACK_HOURS = 10; // How far back to scan for session detection
 
 function _formatTokens(n) {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -165,11 +166,44 @@ function _formatTimeRemaining(minutes) {
 }
 
 function _formatResetTime(minutes) {
+  if (minutes === null || minutes === undefined) return "--";
   if (minutes <= 0) return "resetting now";
   if (minutes < 60) return `${Math.round(minutes)}m reset`;
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
   return `${h}h ${m}m reset`;
+}
+
+/**
+ * Detect the current session window start by walking through entry timestamps.
+ * A new session window starts whenever an entry is >= previous window start + 5h.
+ * Returns the window start (ms) or null if no active session.
+ */
+function _floorToHourUTC(ms) {
+  const d = new Date(ms);
+  d.setUTCMinutes(0, 0, 0);
+  return d.getTime();
+}
+
+function _detectSessionStart(entries, nowMs) {
+  if (entries.length === 0) return null;
+
+  // Sort by timestamp ascending
+  const sorted = entries.slice().sort((a, b) => a.timestamp - b.timestamp);
+  const windowDuration = SESSION_HOURS * 3600000;
+
+  // Floor to the start of the UTC hour (matching Claude-Code-Usage-Monitor)
+  let windowStart = _floorToHourUTC(sorted[0].timestamp);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].timestamp >= windowStart + windowDuration) {
+      windowStart = _floorToHourUTC(sorted[i].timestamp);
+    }
+  }
+
+  // If the detected window has expired, there's no active session
+  if (windowStart + windowDuration <= nowMs) return null;
+
+  return windowStart;
 }
 
 function _makeBar(fraction, segments, style, colorScheme) {
@@ -297,11 +331,46 @@ function _recurseDir(dir, results, cutoffSecs) {
   enumerator.close(null);
 }
 
+let _dedupCounter = 0;
+
+function _extractUsage(entry) {
+  // Check multiple locations for usage data (matching Claude-Code-Usage-Monitor)
+  const isAssistant = entry.type === "assistant";
+  const sources = isAssistant
+    ? [entry.message?.usage, entry.usage, entry]
+    : [entry.usage, entry.message?.usage, entry];
+
+  for (const src of sources) {
+    if (!src || typeof src !== "object") continue;
+    const inp = src.input_tokens || src.inputTokens || 0;
+    const out = src.output_tokens || src.outputTokens || 0;
+    if (inp > 0 || out > 0) {
+      return {
+        input_tokens: inp,
+        output_tokens: out,
+        cache_creation_input_tokens:
+          src.cache_creation_input_tokens || src.cache_creation_tokens || 0,
+        cache_read_input_tokens:
+          src.cache_read_input_tokens || src.cache_read_tokens || 0,
+      };
+    }
+  }
+  return null;
+}
+
+function _extractModel(entry) {
+  return (
+    entry.message?.model || entry.model || entry.usage?.model || ""
+  );
+}
+
 function _readAndParseJsonl(fileInfos, cutoffTime) {
   const decoder = new TextDecoder("utf-8");
-  // Use a Map so later entries (with final output token counts) overwrite
-  // earlier streaming partials that share the same dedupKey
-  const entryMap = new Map();
+  // Keep-first dedup (matching Claude-Code-Usage-Monitor): the first entry
+  // per message_id:request_id is kept, subsequent duplicates are skipped.
+  // Entries without both IDs are always kept (no dedup).
+  const seenKeys = new Set();
+  const results = [];
   const usedPaths = new Set();
 
   for (const fi of fileInfos) {
@@ -311,7 +380,9 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
     if (cached && cached.mtime === fi.mtime) {
       for (const e of cached.entries) {
         if (e.timestamp < cutoffTime) continue;
-        entryMap.set(e.dedupKey, e);
+        if (e.dedupKey && seenKeys.has(e.dedupKey)) continue;
+        if (e.dedupKey) seenKeys.add(e.dedupKey);
+        results.push(e);
       }
       continue;
     }
@@ -329,7 +400,8 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
     const fileEntries = [];
     const lines = contents.split("\n");
     for (const line of lines) {
-      if (!line.includes('"assistant"')) continue;
+      // Quick pre-filter: skip lines without any token-related data
+      if (!line.includes("tokens")) continue;
 
       let entry;
       try {
@@ -338,22 +410,28 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
         continue;
       }
 
-      if (entry.type !== "assistant") continue;
-      if (!entry.message || !entry.message.usage) continue;
+      const usage = _extractUsage(entry);
+      if (!usage) continue;
 
       const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
-      const dedupKey = `${entry.message.id || ""}_${entry.requestId || ""}`;
+
+      // Build dedup key only when both IDs are present; null means no dedup
+      const msgId = entry.message?.id || entry.message_id || "";
+      const reqId = entry.requestId || entry.request_id || "";
+      const dedupKey = msgId && reqId ? `${msgId}_${reqId}` : null;
 
       const parsed = {
         timestamp: ts,
-        model: entry.message.model || "",
-        usage: entry.message.usage,
+        model: _extractModel(entry),
+        usage,
         dedupKey,
       };
       fileEntries.push(parsed);
 
       if (ts < cutoffTime) continue;
-      entryMap.set(dedupKey, parsed);
+      if (dedupKey && seenKeys.has(dedupKey)) continue;
+      if (dedupKey) seenKeys.add(dedupKey);
+      results.push(parsed);
     }
 
     _fileCache.set(fi.path, { mtime: fi.mtime, entries: fileEntries });
@@ -363,7 +441,7 @@ function _readAndParseJsonl(fileInfos, cutoffTime) {
     if (!usedPaths.has(key)) _fileCache.delete(key);
   }
 
-  return [...entryMap.values()];
+  return results;
 }
 
 function _calculateStats(entries) {
@@ -390,8 +468,13 @@ function _calculateStats(entries) {
     totalCacheRead += cr;
 
     const p = PRICING[_getModelTier(entry.model)];
-    // Only input + output count toward plan cost (cache is absorbed by Anthropic)
-    totalCost += (inp * p.input + out * p.output) / 1000000;
+    // Include all token types in cost (matching Claude-Code-Usage-Monitor)
+    totalCost +=
+      (inp * p.input +
+        out * p.output +
+        cc * p.cache_create +
+        cr * p.cache_read) /
+      1000000;
 
     if (entry.timestamp < earliestTs) earliestTs = entry.timestamp;
     if (entry.timestamp > latestTs) {
@@ -400,8 +483,9 @@ function _calculateStats(entries) {
     }
   }
 
-  // totalTokens: all tokens for display
-  // billableTokens: input + output only (cache tokens don't count toward plan limit)
+  // totalTokens: all token types (for display breakdown)
+  // billableTokens: input + output only (cache excluded from plan token limit,
+  // matching Claude-Code-Usage-Monitor's analysis.py totalTokens calculation)
   const totalTokens =
     totalInput + totalOutput + totalCacheCreate + totalCacheRead;
   const billableTokens = totalInput + totalOutput;
@@ -545,27 +629,35 @@ const ClaudeMonitorIndicator = GObject.registerClass(
 
     _refresh() {
       const basePath = GLib.get_home_dir() + "/.claude/projects";
-      // Align to fixed 5-hour blocks (matching Anthropic's rate-limit windows)
       const now = new Date();
-      const utcH = now.getUTCHours();
-      const blockStartH = utcH - (utcH % SESSION_HOURS);
-      const blockStart = Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate(),
-        blockStartH,
-        0,
-        0,
-        0,
+      const nowMs = now.getTime();
+
+      // Look back far enough to detect session boundaries
+      const lookbackMs = nowMs - LOOKBACK_HOURS * 3600000;
+      const lookbackSecs = Math.floor(lookbackMs / 1000);
+
+      // Discover all recent files and parse entries from the lookback window
+      const files = _findRecentJsonlFiles(basePath, lookbackSecs);
+      const allEntries = _readAndParseJsonl(files, lookbackMs);
+
+      // Detect the actual session window from entry timestamps
+      const windowStart = _detectSessionStart(allEntries, nowMs);
+
+      if (windowStart === null) {
+        // No active session — show idle state
+        const stats = _calculateStats([]);
+        this._updateDisplay(stats, null);
+        return;
+      }
+
+      // Filter entries to the detected window [windowStart, windowStart + 5h)
+      const windowEnd = windowStart + SESSION_HOURS * 3600000;
+      const windowEntries = allEntries.filter(
+        (e) => e.timestamp >= windowStart && e.timestamp < windowEnd,
       );
-      const cutoffMs = blockStart;
-      const cutoffSecs = Math.floor(cutoffMs / 1000);
+      const stats = _calculateStats(windowEntries);
 
-      const files = _findRecentJsonlFiles(basePath, cutoffSecs);
-      const entries = _readAndParseJsonl(files, cutoffMs);
-      const stats = _calculateStats(entries);
-
-      const resetMs = blockStart + SESSION_HOURS * 3600000 - now.getTime();
+      const resetMs = windowEnd - nowMs;
       const resetMinutes = Math.max(0, resetMs / 60000);
 
       this._updateDisplay(stats, resetMinutes);
@@ -576,7 +668,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const plan = PLAN_LIMITS[planType];
       const barMetric = this._settings.get_string("bar-metric");
 
-      // Apply estimation scale factor to approximate Anthropic's /usage numbers
+      // Apply estimation scale factor to final counts
       const estMode = this._settings.get_string("estimation-mode");
       const scaleFactor =
         ESTIMATION_MODES[estMode] || ESTIMATION_MODES["balanced"];
@@ -622,7 +714,8 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       if (timeDisplay === "remaining") {
         timeSuffix = ` ${_formatTimeRemaining(timeRemainingMin)}`;
       } else if (timeDisplay === "reset") {
-        timeSuffix = ` ${_formatResetTime(resetMinutes)}`;
+        timeSuffix =
+          resetMinutes !== null ? ` ${_formatResetTime(resetMinutes)}` : "";
       }
 
       // Bar fraction based on metric — _makeBar returns Pango markup
@@ -687,10 +780,14 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         this._timeRemainingItem,
         _formatTimeRemaining(timeRemainingMin),
       );
-      this._updateInfoItem(
-        this._windowResetItem,
-        _formatResetTime(resetMinutes),
-      );
+      let resetStr = _formatResetTime(resetMinutes);
+      if (resetMinutes !== null && resetMinutes > 0) {
+        const resetDate = new Date(Date.now() + resetMinutes * 60000);
+        const hh = resetDate.getHours().toString().padStart(2, "0");
+        const mm = resetDate.getMinutes().toString().padStart(2, "0");
+        resetStr += ` (${hh}:${mm})`;
+      }
+      this._updateInfoItem(this._windowResetItem, resetStr);
 
       if (plan) {
         const pctTokens = ((stats.billableTokens / plan.tokens) * 100).toFixed(
