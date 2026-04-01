@@ -2201,9 +2201,11 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       if (this._dataSourceItem) {
         if (this._usingHeuristic) {
           const reason = this._apiError || "No API data yet";
+          // Escape for Pango markup since _updateInfoItem uses set_markup()
+          const safe = reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
           this._updateInfoItem(
             this._dataSourceItem,
-            `Heuristic (${reason})`,
+            `Heuristic (${safe})`,
           );
         } else {
           this._updateInfoItem(this._dataSourceItem, "Anthropic API");
