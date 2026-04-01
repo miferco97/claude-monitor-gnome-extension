@@ -3,12 +3,44 @@ import GObject from "gi://GObject";
 import Gio from "gi://Gio";
 import St from "gi://St";
 import Clutter from "gi://Clutter";
+import Soup from "gi://Soup?version=3.0";
 
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
+
+// Rate-limit API configuration
+const USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage";
+const OAUTH_BETA_HEADER = "oauth-2025-04-20";
+
+/**
+ * Read the OAuth access token from ~/.claude/.credentials.json
+ * Returns { token, expired } or null if credentials not found.
+ */
+function _readOAuthToken() {
+  try {
+    const credPath =
+      (GLib.getenv("CLAUDE_CONFIG_DIR") || GLib.get_home_dir() + "/.claude") +
+      "/.credentials.json";
+    const file = Gio.File.new_for_path(credPath);
+    if (!file.query_exists(null)) return null;
+
+    const [ok, contents] = file.load_contents(null);
+    if (!ok) return null;
+
+    const creds = JSON.parse(new TextDecoder().decode(contents));
+    const oauth = creds.claudeAiOauth;
+    if (!oauth || !oauth.accessToken) return null;
+
+    const expired =
+      oauth.expiresAt && oauth.expiresAt < Date.now();
+    return { token: oauth.accessToken, expired: !!expired };
+  } catch (e) {
+    return null;
+  }
+}
 
 // Pricing per million tokens
 const PRICING = {
@@ -646,6 +678,10 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._extensionPath = extension.path;
       this._isPulsing = false;
       this._burnHistory = [];
+      this._apiUtilization = null; // Last successful API response
+      this._apiError = null; // Error message if API call failed
+      this._apiFetching = false; // Prevent concurrent API calls
+      this._soupSession = null; // Lazy-init HTTP session
 
       // Panel box
       this._box = new St.BoxLayout({ style_class: "panel-status-menu-box" });
@@ -1231,6 +1267,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       this._planItem = this._addInfoItem("Plan usage", "--");
+      this._dataSourceItem = this._addInfoItem("Data source", "--");
 
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -1328,6 +1365,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         "Session",
         "--",
       );
+      this._dataSourceItem = this._addModernItem(
+        "\uD83D\uDCE1",
+        null,
+        "Data source",
+        "--",
+      );
 
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -1417,6 +1460,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         "\uD83D\uDCAC",
         null,
         "Session",
+        "--",
+      );
+      this._dataSourceItem = this._addModernItem(
+        "\uD83D\uDCE1",
+        null,
+        "Data source",
         "--",
       );
 
@@ -1601,11 +1650,98 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       }
     }
 
+    // ── Rate-limit API ──────────────────────────────────────
+
+    _fetchUtilizationAsync() {
+      if (this._apiFetching) return;
+
+      const creds = _readOAuthToken();
+      if (!creds) {
+        this._apiError = "No OAuth credentials";
+        return;
+      }
+      if (creds.expired) {
+        this._apiError = "OAuth token expired — run Claude Code to refresh";
+        return;
+      }
+
+      if (!this._soupSession) {
+        this._soupSession = new Soup.Session({
+          timeout: 10,
+          user_agent: "claude-monitor-gnome-extension",
+        });
+      }
+
+      const message = Soup.Message.new("GET", USAGE_API_URL);
+      message.request_headers.append(
+        "Authorization",
+        `Bearer ${creds.token}`,
+      );
+      message.request_headers.append("anthropic-beta", OAUTH_BETA_HEADER);
+
+      this._apiFetching = true;
+      this._soupSession.send_and_read_async(
+        message,
+        GLib.PRIORITY_DEFAULT,
+        null,
+        (session, result) => {
+          this._apiFetching = false;
+          try {
+            const bytes = session.send_and_read_finish(result);
+            if (message.get_status() !== Soup.Status.OK) {
+              this._apiError = `API HTTP ${message.get_status()}`;
+              return;
+            }
+            const body = new TextDecoder().decode(bytes.get_data());
+            this._apiUtilization = JSON.parse(body);
+            this._apiError = null;
+          } catch (e) {
+            this._apiError = `API error: ${e.message}`;
+          }
+          // Re-render with fresh API data
+          this._refreshDisplay();
+        },
+      );
+    }
+
+    /**
+     * Re-run the local stats calculation and update display.
+     * Called after an async API response arrives.
+     */
+    _refreshDisplay() {
+      const basePath = GLib.get_home_dir() + "/.claude/projects";
+      const now = new Date();
+      const nowMs = now.getTime();
+      const lookbackMs = nowMs - LOOKBACK_HOURS * 3600000;
+      const lookbackSecs = Math.floor(lookbackMs / 1000);
+
+      const files = _findRecentJsonlFiles(basePath, lookbackSecs);
+      const allEntries = _readAndParseJsonl(files, lookbackMs);
+      const windowStart = _detectSessionStart(allEntries, nowMs);
+
+      if (windowStart === null) {
+        this._updateDisplay(_calculateStats([]), null);
+        return;
+      }
+
+      const windowEnd = windowStart + SESSION_HOURS * 3600000;
+      const windowEntries = allEntries.filter(
+        (e) => e.timestamp >= windowStart && e.timestamp < windowEnd,
+      );
+      const stats = _calculateStats(windowEntries);
+      const resetMs = windowEnd - nowMs;
+      const resetMinutes = Math.max(0, resetMs / 60000);
+      this._updateDisplay(stats, resetMinutes);
+    }
+
     // ── Refresh ──────────────────────────────────────────────
 
     _refresh() {
       // Brief spin animation on refresh
       this._spinIcon();
+
+      // Trigger async API fetch (non-blocking)
+      this._fetchUtilizationAsync();
 
       const basePath = GLib.get_home_dir() + "/.claude/projects";
       const now = new Date();
@@ -1649,16 +1785,34 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const plan = PLAN_LIMITS[planType];
       const barMetric = this._settings.get_string("bar-metric");
 
-      // Apply estimation scale factor
-      const estMode = this._settings.get_string("estimation-mode");
-      const scaleFactor =
-        ESTIMATION_MODES[estMode] || ESTIMATION_MODES["balanced"];
-      stats.totalCost *= scaleFactor;
-      stats.billableTokens = Math.round(stats.billableTokens * scaleFactor);
-      stats.burnRateCostH *= scaleFactor;
-      stats.burnRateTokensH *= scaleFactor;
+      // ── Rate-limit source: API (primary) vs heuristic (fallback) ──
+      const apiData = this._apiUtilization;
+      const useApi = apiData && apiData.five_hour != null &&
+        apiData.five_hour.utilization != null;
+      this._usingHeuristic = !useApi;
 
-      // Calculate time remaining
+      let apiFraction = 0;
+      let apiResetMinutes = null;
+      if (useApi) {
+        apiFraction = apiData.five_hour.utilization / 100;
+        if (apiData.five_hour.resets_at) {
+          const resetAt = new Date(apiData.five_hour.resets_at).getTime();
+          apiResetMinutes = Math.max(0, (resetAt - Date.now()) / 60000);
+        }
+      }
+
+      if (!useApi) {
+        // Fallback: apply estimation scale factor (old heuristic)
+        const estMode = this._settings.get_string("estimation-mode");
+        const scaleFactor =
+          ESTIMATION_MODES[estMode] || ESTIMATION_MODES["balanced"];
+        stats.totalCost *= scaleFactor;
+        stats.billableTokens = Math.round(stats.billableTokens * scaleFactor);
+        stats.burnRateCostH *= scaleFactor;
+        stats.burnRateTokensH *= scaleFactor;
+      }
+
+      // Calculate time remaining (from burn rate, only meaningful for heuristic)
       let timeRemainingMin = Infinity;
       if (plan) {
         if (barMetric === "tokens" && stats.burnRateTokensH > 0) {
@@ -1694,15 +1848,22 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       _customColorEnd =
         this._settings.get_string("custom-color-end") || "#c4a0ff";
 
-      // Compute fraction
+      // Compute fraction — prefer API utilization, fall back to heuristic
       let fraction = 0;
-      if (plan && stats.entryCount > 0) {
+      if (useApi) {
+        fraction = apiFraction;
+      } else if (plan && stats.entryCount > 0) {
         fraction =
           barMetric === "tokens"
             ? stats.billableTokens / plan.tokens
             : stats.totalCost / plan.cost;
       }
       const pct = Math.min(fraction * 100, 999).toFixed(0);
+
+      // Override reset time with API data when available
+      if (apiResetMinutes !== null) {
+        resetMinutes = apiResetMinutes;
+      }
 
       // Status color
       const dotColor =
@@ -2035,6 +2196,19 @@ const ClaudeMonitorIndicator = GObject.registerClass(
           this._updateInfoItem(this._planItem, "No plan configured");
         }
       }
+
+      // ── Data source indicator (shared across all dropdown styles) ──
+      if (this._dataSourceItem) {
+        if (this._usingHeuristic) {
+          const reason = this._apiError || "No API data yet";
+          this._updateInfoItem(
+            this._dataSourceItem,
+            `Heuristic (${reason})`,
+          );
+        } else {
+          this._updateInfoItem(this._dataSourceItem, "Anthropic API");
+        }
+      }
     }
 
     destroy() {
@@ -2052,6 +2226,10 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       if (this._settingsChangedId) {
         this._settings.disconnect(this._settingsChangedId);
         this._settingsChangedId = null;
+      }
+      if (this._soupSession) {
+        this._soupSession.abort();
+        this._soupSession = null;
       }
       super.destroy();
     }

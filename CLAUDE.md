@@ -21,7 +21,8 @@ A compact GNOME Shell 48 taskbar indicator that monitors Claude Code token usage
 - **Status badge**: colored dot overlay on icon corner
 - **Custom colors**: user-defined gradient via color picker in preferences
 - **Configurable**: bar length, refresh interval, panel position, metric (cost/tokens)
-- **Estimation scale factors**: conservative (0.8x), balanced (1.0x), generous (1.2x)
+- **Real API rate limits**: fetches live utilization from Anthropic's `/api/oauth/usage` endpoint (Pro/Max plans), with automatic fallback to local heuristic estimation if the API is unavailable
+- **Estimation scale factors** (heuristic fallback): conservative (0.8x), balanced (1.0x), generous (1.2x)
 - **Performance optimized**: mtime-based file filtering, per-file caching, string pre-filter
 
 ## Architecture
@@ -33,11 +34,25 @@ A compact GNOME Shell 48 taskbar indicator that monitors Claude Code token usage
 - `icons/` — Claude logo PNGs (16px, 32px, 48px) + claude-symbolic.svg
 - Installed via symlink from `~/.local/share/gnome-shell/extensions/claude-monitor@miferco97/`
 
+## Rate Limit Data Sources
+
+### Primary: Anthropic API (Pro/Max plans)
+- Calls `GET https://api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json`
+- Returns real utilization percentages (0–100%) for 5-hour and 7-day windows, plus reset timestamps
+- Requires `anthropic-beta: oauth-2025-04-20` header
+- Non-blocking async fetch via libsoup3; result cached and used on next display update
+- The dropdown shows "Data source: Anthropic API" when active
+
+### Fallback: Local Heuristic
+- Used automatically when the API call fails (no credentials, expired token, network error)
+- Reads JSONL files from `~/.claude/projects/` and estimates utilization using hardcoded plan limits + estimation scale factor
+- The dropdown shows "Data source: Heuristic (reason)" with the specific error
+
 ## Token & Cost Measurement
 
 Aligned with [Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor):
 
-- **Token plan limits**: input + output only (cache excluded). Pro: 19k, Max5: 88k, Max20: 220k.
+- **Token plan limits** (heuristic mode): input + output only (cache excluded). Pro: 19k, Max5: 88k, Max20: 220k.
 - **Cost calculation**: includes all 4 token types (input, output, cache_creation, cache_read) at per-model pricing.
 - **Dedup strategy**: keep-first — the first JSONL entry per `message_id:request_id` is kept, subsequent streaming duplicates are skipped. Entries missing either ID are always kept (no dedup).
 - **Entry type filtering**: all entry types are processed (not just `"assistant"`), with usage extracted from `message.usage`, `usage`, or the entry itself.
@@ -46,7 +61,8 @@ Aligned with [Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Clau
 
 ## Known Issues
 
-- **Cost estimation may still have minor discrepancies** vs Claude Code's `/usage` command. Possible remaining causes: pricing constants may not exactly match Anthropic's billing, server-side overhead tokens not recorded in JSONL.
+- **Heuristic cost estimation may still have minor discrepancies** vs Claude Code's `/usage` command. Possible remaining causes: pricing constants may not exactly match Anthropic's billing, server-side overhead tokens not recorded in JSONL. When the API is available, the utilization percentage comes directly from Anthropic's servers and is accurate.
+- **OAuth token expiry**: The extension reads but does not refresh OAuth tokens. If the token expires, the extension falls back to heuristic mode until Claude Code is run again (which refreshes the token automatically).
 
 ## Past Bugs Fixed
 
