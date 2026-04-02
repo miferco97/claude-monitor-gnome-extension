@@ -63,6 +63,50 @@ export default class ClaudeMonitorPreferences extends ExtensionPreferences {
         });
         planGroup.add(estRow);
 
+        // -- Data Source Mode --
+        const dsRow = new Adw.ComboRow({
+            title: 'Data Source Mode',
+            subtitle: 'How to combine API and heuristic data.',
+        });
+        const dsModel = Gtk.StringList.new([
+            'Hybrid (API anchor + live heuristic delta)',
+            'API only (update on each API fetch)',
+        ]);
+        dsRow.set_model(dsModel);
+        const dsKeys = ['hybrid', 'api-only'];
+        dsRow.set_selected(Math.max(0, dsKeys.indexOf(settings.get_string('data-source-mode'))));
+        dsRow.connect('notify::selected', () => {
+            settings.set_string('data-source-mode', dsKeys[dsRow.get_selected()]);
+        });
+        planGroup.add(dsRow);
+
+        // -- API Fetch Interval --
+        const apiFetchRow = new Adw.SpinRow({
+            title: 'API Fetch Interval',
+            subtitle: 'How often to call the Anthropic API (seconds, min 10).',
+            adjustment: new Gtk.Adjustment({
+                lower: 10,
+                upper: 3600,
+                step_increment: 30,
+                value: settings.get_int('api-fetch-interval'),
+            }),
+        });
+        apiFetchRow.connect('notify::value', () => {
+            settings.set_int('api-fetch-interval', apiFetchRow.get_value());
+        });
+        planGroup.add(apiFetchRow);
+
+        // -- Show API update time --
+        const apiTimeRow = new Adw.SwitchRow({
+            title: 'Show API Update Time',
+            subtitle: 'Display how long ago the last API fetch was.',
+        });
+        apiTimeRow.set_active(settings.get_boolean('show-api-update-time'));
+        apiTimeRow.connect('notify::active', () => {
+            settings.set_boolean('show-api-update-time', apiTimeRow.get_active());
+        });
+        planGroup.add(apiTimeRow);
+
         // -- Bar Metric --
         const metricGroup = new Adw.PreferencesGroup({
             title: 'Metric',

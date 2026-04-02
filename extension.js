@@ -14,6 +14,7 @@ import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 // Rate-limit API configuration
 const USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER = "oauth-2025-04-20";
+const API_FETCH_INTERVAL_MIN_MS = 10 * 1000; // minimum 10 seconds
 
 /**
  * Read the OAuth access token from ~/.claude/.credentials.json
@@ -39,6 +40,26 @@ function _readOAuthToken() {
     return { token: oauth.accessToken, expired: !!expired };
   } catch (e) {
     return null;
+  }
+}
+
+/**
+ * Resolve the claude binary symlink to extract the version number.
+ * e.g. ~/.local/share/claude/versions/2.1.90 → "2.1.90"
+ * Falls back to "2.0.0" if unresolvable.
+ */
+function _getClaudeCodeVersion() {
+  try {
+    const claudePath = GLib.find_program_in_path("claude");
+    if (!claudePath) return "2.0.0";
+    const file = Gio.File.new_for_path(claudePath);
+    const info = file.query_info("standard::symlink-target", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+    const target = info.get_symlink_target();
+    if (!target) return "2.0.0";
+    const match = target.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : "2.0.0";
+  } catch (_) {
+    return "2.0.0";
   }
 }
 
@@ -682,6 +703,11 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this._apiError = null; // Error message if API call failed
       this._apiFetching = false; // Prevent concurrent API calls
       this._soupSession = null; // Lazy-init HTTP session
+      this._lastApiFetchMs = 0; // Timestamp of last API fetch attempt
+      this._apiLastUpdatedMs = null; // Timestamp of last successful API response
+      this._apiDataFresh = false; // True only during the _refreshDisplay() call right after fetch
+      this._apiAnchorFraction = null; // API utilization fraction at last anchor
+      this._heuristicAnchorFraction = null; // Heuristic fraction at same anchor moment
 
       // Panel box
       this._box = new St.BoxLayout({ style_class: "panel-status-menu-box" });
@@ -1272,12 +1298,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       const refreshItem = new PopupMenu.PopupMenuItem("Refresh Now");
-      refreshItem.connect("activate", () => this._refresh());
+      refreshItem.connect("activate", () => { this._lastApiFetchMs = 0; this._refresh(); });
       this.menu.addMenuItem(refreshItem);
 
       const settingsItem = new PopupMenu.PopupMenuItem("Settings");
       settingsItem.connect("activate", () => {
-        this._extension.openPreferences();
+        try { this._extension.openPreferences(); } catch (_) {}
       });
       this.menu.addMenuItem(settingsItem);
     }
@@ -1375,12 +1401,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       const refreshItem = new PopupMenu.PopupMenuItem("\u21BB Refresh");
-      refreshItem.connect("activate", () => this._refresh());
+      refreshItem.connect("activate", () => { this._lastApiFetchMs = 0; this._refresh(); });
       this.menu.addMenuItem(refreshItem);
 
       const settingsItem = new PopupMenu.PopupMenuItem("\u2699 Settings");
       settingsItem.connect("activate", () => {
-        this._extension.openPreferences();
+        try { this._extension.openPreferences(); } catch (_) {}
       });
       this.menu.addMenuItem(settingsItem);
     }
@@ -1472,12 +1498,12 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       const refreshItem = new PopupMenu.PopupMenuItem("\u21BB Refresh");
-      refreshItem.connect("activate", () => this._refresh());
+      refreshItem.connect("activate", () => { this._lastApiFetchMs = 0; this._refresh(); });
       this.menu.addMenuItem(refreshItem);
 
       const settingsItem = new PopupMenu.PopupMenuItem("\u2699 Settings");
       settingsItem.connect("activate", () => {
-        this._extension.openPreferences();
+        try { this._extension.openPreferences(); } catch (_) {}
       });
       this.menu.addMenuItem(settingsItem);
     }
@@ -1668,7 +1694,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       if (!this._soupSession) {
         this._soupSession = new Soup.Session({
           timeout: 10,
-          user_agent: "claude-monitor-gnome-extension",
+          user_agent: `claude-code/${_getClaudeCodeVersion()}`,
         });
       }
 
@@ -1678,6 +1704,7 @@ const ClaudeMonitorIndicator = GObject.registerClass(
         `Bearer ${creds.token}`,
       );
       message.request_headers.append("anthropic-beta", OAUTH_BETA_HEADER);
+      message.request_headers.append("Content-Type", "application/json");
 
       this._apiFetching = true;
       this._soupSession.send_and_read_async(
@@ -1688,20 +1715,82 @@ const ClaudeMonitorIndicator = GObject.registerClass(
           this._apiFetching = false;
           try {
             const bytes = session.send_and_read_finish(result);
-            if (message.get_status() !== Soup.Status.OK) {
-              this._apiError = `API HTTP ${message.get_status()}`;
+            const statusCode = message.status_code;
+            if (statusCode !== 200) {
+              this._apiError = `API HTTP ${statusCode}`;
+              Main.notify("Claude Monitor", `Rate limit API failed: ${this._apiError}`);
               return;
             }
             const body = new TextDecoder().decode(bytes.get_data());
             this._apiUtilization = JSON.parse(body);
+            this._apiLastUpdatedMs = Date.now();
+            this._apiDataFresh = true;
             this._apiError = null;
           } catch (e) {
             this._apiError = `API error: ${e.message}`;
+            Main.notify("Claude Monitor", `Rate limit API failed: ${this._apiError}`);
           }
           // Re-render with fresh API data
           this._refreshDisplay();
         },
       );
+    }
+
+    // ── Training data logger ─────────────────────────────────
+
+    _logTrainingRow(stats, windowStart, nowMs, resetMinutes) {
+      if (!this._apiUtilization || this._apiUtilization.five_hour == null)
+        return;
+
+      const apiPct = this._apiUtilization.five_hour.utilization;
+      if (apiPct == null) return;
+
+      const planType = this._settings.get_string("plan-type");
+      const plan = PLAN_LIMITS[planType];
+      const costFraction = plan ? stats.totalCost / plan.cost : 0;
+      const tokenFraction = plan ? stats.billableTokens / plan.tokens : 0;
+      const sessionAgeMin = windowStart != null
+        ? (nowMs - windowStart) / 60000
+        : 0;
+
+      const row = [
+        new Date(nowMs).toISOString(),
+        apiPct.toFixed(2),
+        costFraction.toFixed(6),
+        tokenFraction.toFixed(6),
+        stats.totalCost.toFixed(6),
+        stats.billableTokens,
+        stats.burnRateCostH.toFixed(6),
+        stats.burnRateTokensH.toFixed(0),
+        stats.entryCount,
+        planType,
+        sessionAgeMin.toFixed(1),
+        resetMinutes != null ? resetMinutes.toFixed(1) : "",
+      ].join(",") + "\n";
+
+      const csvPath = GLib.get_home_dir() + "/.claude/monitor_training.csv";
+      const file = Gio.File.new_for_path(csvPath);
+
+      // Write header if file doesn't exist yet
+      if (!file.query_exists(null)) {
+        const header =
+          "timestamp,api_utilization_pct,heuristic_cost_fraction," +
+          "heuristic_token_fraction,total_cost,billable_tokens," +
+          "burn_rate_cost_h,burn_rate_tokens_h,entry_count,plan_type," +
+          "session_age_min,reset_min\n";
+        file.replace_contents(
+          new TextEncoder().encode(header + row),
+          null, false,
+          Gio.FileCreateFlags.NONE,
+          null,
+        );
+        return;
+      }
+
+      // Append row
+      const stream = file.append_to(Gio.FileCreateFlags.NONE, null);
+      stream.write_all(new TextEncoder().encode(row), null);
+      stream.close(null);
     }
 
     /**
@@ -1731,6 +1820,21 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const stats = _calculateStats(windowEntries);
       const resetMs = windowEnd - nowMs;
       const resetMinutes = Math.max(0, resetMs / 60000);
+
+      // Log ground-truth row whenever API data and heuristic stats align
+      this._logTrainingRow(stats, windowStart, nowMs, resetMinutes);
+
+      // Save anchor: API utilization + matching heuristic fraction at this moment
+      if (this._apiUtilization && this._apiUtilization.five_hour != null &&
+          this._apiUtilization.five_hour.utilization != null) {
+        const planType = this._settings.get_string("plan-type");
+        const plan = PLAN_LIMITS[planType];
+        this._apiAnchorFraction = this._apiUtilization.five_hour.utilization / 100;
+        this._heuristicAnchorFraction = plan && plan.cost > 0
+          ? stats.totalCost / plan.cost
+          : 0;
+      }
+
       this._updateDisplay(stats, resetMinutes);
     }
 
@@ -1739,13 +1843,21 @@ const ClaudeMonitorIndicator = GObject.registerClass(
     _refresh() {
       // Brief spin animation on refresh
       this._spinIcon();
-
-      // Trigger async API fetch (non-blocking)
-      this._fetchUtilizationAsync();
+      this._apiDataFresh = false; // Mark API data as stale until next fetch completes
 
       const basePath = GLib.get_home_dir() + "/.claude/projects";
       const now = new Date();
       const nowMs = now.getTime();
+
+      // Trigger async API fetch (non-blocking, low-frequency)
+      const apiFetchIntervalMs = Math.max(
+        API_FETCH_INTERVAL_MIN_MS,
+        this._settings.get_int("api-fetch-interval") * 1000,
+      );
+      if (nowMs - this._lastApiFetchMs >= apiFetchIntervalMs) {
+        this._lastApiFetchMs = nowMs;
+        this._fetchUtilizationAsync();
+      }
 
       const lookbackMs = nowMs - LOOKBACK_HOURS * 3600000;
       const lookbackSecs = Math.floor(lookbackMs / 1000);
@@ -1785,24 +1897,26 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       const plan = PLAN_LIMITS[planType];
       const barMetric = this._settings.get_string("bar-metric");
 
-      // ── Rate-limit source: API (primary) vs heuristic (fallback) ──
+      // ── Rate-limit source ──────────────────────────────────────────────
+      // Three modes:
+      //   "api"      — fresh API data just arrived (useApi = true)
+      //   "hybrid"   — API anchor + heuristic delta since then
+      //   "heuristic" — no API data ever received, pure local estimation
       const apiData = this._apiUtilization;
-      const useApi = apiData && apiData.five_hour != null &&
+      const useApi = this._apiDataFresh && apiData && apiData.five_hour != null &&
         apiData.five_hour.utilization != null;
-      this._usingHeuristic = !useApi;
+      const hasAnchor = this._apiAnchorFraction !== null &&
+        this._heuristicAnchorFraction !== null;
+      this._usingHeuristic = !useApi && !hasAnchor;
 
-      let apiFraction = 0;
       let apiResetMinutes = null;
-      if (useApi) {
-        apiFraction = apiData.five_hour.utilization / 100;
-        if (apiData.five_hour.resets_at) {
-          const resetAt = new Date(apiData.five_hour.resets_at).getTime();
-          apiResetMinutes = Math.max(0, (resetAt - Date.now()) / 60000);
-        }
+      if (apiData && apiData.five_hour && apiData.five_hour.resets_at) {
+        const resetAt = new Date(apiData.five_hour.resets_at).getTime();
+        apiResetMinutes = Math.max(0, (resetAt - Date.now()) / 60000);
       }
 
-      if (!useApi) {
-        // Fallback: apply estimation scale factor (old heuristic)
+      if (!useApi && !hasAnchor) {
+        // Pure heuristic: apply estimation scale factor
         const estMode = this._settings.get_string("estimation-mode");
         const scaleFactor =
           ESTIMATION_MODES[estMode] || ESTIMATION_MODES["balanced"];
@@ -1848,10 +1962,23 @@ const ClaudeMonitorIndicator = GObject.registerClass(
       _customColorEnd =
         this._settings.get_string("custom-color-end") || "#c4a0ff";
 
-      // Compute fraction — prefer API utilization, fall back to heuristic
+      // Compute fraction ────────────────────────────────────────────────────
+      // "api"     → direct from API (fresh anchor just set)
+      // "hybrid"  → api_anchor + heuristic delta since anchor
+      // "heuristic" → local cost/token ratio only
+      const dsMode = this._settings.get_string("data-source-mode");
+      const apiOnlyMode = dsMode === "api-only";
+
       let fraction = 0;
       if (useApi) {
-        fraction = apiFraction;
+        fraction = this._apiAnchorFraction ?? (apiData.five_hour.utilization / 100);
+      } else if (!apiOnlyMode && hasAnchor && plan && plan.cost > 0) {
+        const currentHeuristicFraction = stats.totalCost / plan.cost;
+        const delta = currentHeuristicFraction - this._heuristicAnchorFraction;
+        fraction = Math.max(0, Math.min(1, this._apiAnchorFraction + delta));
+      } else if (hasAnchor) {
+        // api-only mode: hold the last known API value until next fetch
+        fraction = this._apiAnchorFraction;
       } else if (plan && stats.entryCount > 0) {
         fraction =
           barMetric === "tokens"
@@ -2199,16 +2326,23 @@ const ClaudeMonitorIndicator = GObject.registerClass(
 
       // ── Data source indicator (shared across all dropdown styles) ──
       if (this._dataSourceItem) {
-        if (this._usingHeuristic) {
-          const reason = this._apiError || "No API data yet";
-          // Escape for Pango markup since _updateInfoItem uses set_markup()
-          const safe = reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          this._updateInfoItem(
-            this._dataSourceItem,
-            `Heuristic (${safe})`,
-          );
+        const showApiTime = this._settings.get_boolean("show-api-update-time");
+        const apiAgeStr = () => {
+          if (!showApiTime || !this._apiLastUpdatedMs) return "";
+          const ageS = Math.round((Date.now() - this._apiLastUpdatedMs) / 1000);
+          if (ageS < 60) return ` · ${ageS}s ago`;
+          return ` · ${Math.round(ageS / 60)}m ago`;
+        };
+
+        if (useApi) {
+          this._updateInfoItem(this._dataSourceItem, `Anthropic API${apiAgeStr()}`);
+        } else if (hasAnchor) {
+          const label = apiOnlyMode ? "API only (cached)" : "Hybrid (API anchor + heuristic delta)";
+          this._updateInfoItem(this._dataSourceItem, `${label}${apiAgeStr()}`);
         } else {
-          this._updateInfoItem(this._dataSourceItem, "Anthropic API");
+          const reason = this._apiError || "No API data yet";
+          const safe = reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          this._updateInfoItem(this._dataSourceItem, `Heuristic (${safe})`);
         }
       }
     }

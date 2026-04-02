@@ -69,6 +69,24 @@
       <description>How aggressively to estimate usage. "conservative" shows raw calculated values, "balanced" applies a small correction factor to approximate /usage, "generous" adds extra margin for safety.</description>
     </key>
 
+    <key name="data-source-mode" type="s">
+      <default>'hybrid'</default>
+      <summary>Data source mode</summary>
+      <description>"hybrid" uses API as anchor and heuristic for live delta between fetches. "api-only" shows API utilization directly and only updates when a fresh API response arrives.</description>
+    </key>
+
+    <key name="api-fetch-interval" type="i">
+      <default>300</default>
+      <summary>API fetch interval (seconds)</summary>
+      <description>How often to call the Anthropic rate-limit API. Minimum 10 seconds.</description>
+    </key>
+
+    <key name="show-api-update-time" type="b">
+      <default>true</default>
+      <summary>Show API last update time</summary>
+      <description>Show how long ago the last successful API fetch was in the dropdown data source row.</description>
+    </key>
+
     <!-- Individual display toggles (replace display-mode) -->
 
     <key name="show-icon" type="b">
