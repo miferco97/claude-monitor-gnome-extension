@@ -1,15 +1,16 @@
-import GLib from "gi://GLib";
-import GObject from "gi://GObject";
-import Gio from "gi://Gio";
-import St from "gi://St";
-import Clutter from "gi://Clutter";
-import Soup from "gi://Soup?version=3.0";
+imports.gi.versions.Soup = "3.0";
+const GLib = imports.gi.GLib;
+const GObject = imports.gi.GObject;
+const Gio = imports.gi.Gio;
+const St = imports.gi.St;
+const Clutter = imports.gi.Clutter;
+const Soup = imports.gi.Soup;
 
-import * as Main from "resource:///org/gnome/shell/ui/main.js";
-import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
-import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
-
-import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
+const Main = imports.ui.main;
+const PanelMenu = imports.ui.panelMenu;
+const PopupMenu = imports.ui.popupMenu;
+const ExtensionUtils = imports.misc.extensionUtils;
+const Me = ExtensionUtils.getCurrentExtension();
 
 // Rate-limit API configuration
 const USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -2372,19 +2373,30 @@ const ClaudeMonitorIndicator = GObject.registerClass(
   },
 );
 
-export default class ClaudeMonitorExtension extends Extension {
-  enable() {
-    this._indicator = new ClaudeMonitorIndicator(this);
+let _indicator = null;
 
-    const position = this.getSettings().get_string("panel-position");
-    const box = position === "left" ? "left" : "right";
-    Main.panel.addToStatusArea("claude-monitor", this._indicator, 0, box);
-  }
+function init() {}
 
-  disable() {
-    if (this._indicator) {
-      this._indicator.destroy();
-      this._indicator = null;
-    }
+function enable() {
+  const settings = ExtensionUtils.getSettings();
+  const extensionCompat = {
+    getSettings: () => settings,
+    path: Me.path,
+    openPreferences: () => {
+      try {
+        ExtensionUtils.openExtensionPrefs(Me.uuid, "", {});
+      } catch (e) {}
+    },
+  };
+  _indicator = new ClaudeMonitorIndicator(extensionCompat);
+  const position = settings.get_string("panel-position");
+  const box = position === "left" ? "left" : "right";
+  Main.panel.addToStatusArea("claude-monitor", _indicator, 0, box);
+}
+
+function disable() {
+  if (_indicator) {
+    _indicator.destroy();
+    _indicator = null;
   }
 }
